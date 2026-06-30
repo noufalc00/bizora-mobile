@@ -23,7 +23,7 @@ VOUCHER_SLUG_CONFIG: dict[str, dict[str, str]] = {
     "sales-return-book": {
         "header_table": "sales_returns",
         "item_table": "sales_return_items",
-        "item_fk": "return_id",
+        "item_fk": "sales_return_id",
         "number_col": "return_no",
         "date_col": "return_date",
         "party_col": "party_id",
@@ -43,7 +43,7 @@ VOUCHER_SLUG_CONFIG: dict[str, dict[str, str]] = {
     "purchase-return-book": {
         "header_table": "purchase_returns",
         "item_table": "purchase_return_items",
-        "item_fk": "return_id",
+        "item_fk": "purchase_return_id",
         "number_col": "return_no",
         "date_col": "return_date",
         "party_col": "party_id",
@@ -201,14 +201,24 @@ def _fetch_items_for_headers(
     rows: list[dict[str, Any]] = []
     for start in range(0, len(header_ids), 80):
         batch = header_ids[start : start + 80]
-        response = (
-            client.table(item_table)
-            .select("*")
-            .in_(item_fk, batch)
-            .limit(5000)
-            .execute()
-        )
-        rows.extend(response.data or [])
+        try:
+            response = (
+                client.table(item_table)
+                .select("*")
+                .in_(item_fk, batch)
+                .limit(5000)
+                .execute()
+            )
+            rows.extend(response.data or [])
+        except Exception as exc:
+            message = str(exc)
+            if "Could not find the table" in message or "does not exist" in message:
+                print(
+                    f"[MOBILE-SUPABASE] Item table '{item_table}' missing in Supabase. "
+                    "Run: python setup_supabase.py && python sync_bulk_to_supabase.py"
+                )
+                return []
+            raise
     return rows
 
 

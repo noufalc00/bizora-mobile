@@ -55,6 +55,12 @@ SYNC_PLAN: tuple[tuple[str, str, str], ...] = (
         "company_id,return_no",
     ),
     (
+        "sales_return_items",
+        "SELECT sri.* FROM sales_return_items sri INNER JOIN sales_returns sr ON sr.id = sri.sales_return_id "
+        "WHERE sr.company_id IN ({company_ids})",
+        "id",
+    ),
+    (
         "purchases",
         "SELECT * FROM purchases WHERE company_id IN ({company_ids})",
         "company_id,purchase_number",
@@ -69,6 +75,12 @@ SYNC_PLAN: tuple[tuple[str, str, str], ...] = (
         "purchase_returns",
         "SELECT * FROM purchase_returns WHERE company_id IN ({company_ids})",
         "company_id,return_no",
+    ),
+    (
+        "purchase_return_items",
+        "SELECT pri.* FROM purchase_return_items pri INNER JOIN purchase_returns pr ON pr.id = pri.purchase_return_id "
+        "WHERE pr.company_id IN ({company_ids})",
+        "id",
     ),
     (
         "ledger_entries",

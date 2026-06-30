@@ -220,18 +220,35 @@ class MobileSupabaseService:
         select: str = "*",
         limit: int = 1000,
         order_col: Optional[str] = None,
+        company_scoped: bool = True,
     ) -> list[dict[str, Any]]:
         """Fetch one company-scoped table from Supabase."""
-        query = (
-            self._client()
-            .table(table_name)
-            .select(select)
-            .eq("company_id", company_id)
-            .limit(limit)
-        )
+        query = self._client().table(table_name).select(select).limit(limit)
+        if company_scoped:
+            query = query.eq("company_id", company_id)
         if order_col:
             query = query.order(order_col, desc=True)
-        return query.execute().data or []
+        try:
+            return query.execute().data or []
+        except Exception as exc:
+            message = str(exc)
+            if company_scoped and "company_id does not exist" in message:
+                fallback = (
+                    self._client()
+                    .table(table_name)
+                    .select(select)
+                    .limit(limit)
+                )
+                if order_col:
+                    fallback = fallback.order(order_col, desc=True)
+                return fallback.execute().data or []
+            if "Could not find the table" in message:
+                print(
+                    f"[MOBILE-SUPABASE] Table '{table_name}' missing. "
+                    "Run: python setup_supabase.py && python sync_bulk_to_supabase.py"
+                )
+                return []
+            raise
 
     @staticmethod
     def _financial_year_range(today: date) -> tuple[date, date]:
