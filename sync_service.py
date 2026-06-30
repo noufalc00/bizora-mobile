@@ -272,8 +272,14 @@ def _table_conflict_key(table_name: str) -> str:
         "companies": "id",
         "parties": "id",
         "products": "id",
+        "ledger_accounts": "id",
+        "ledger_entries": "id",
         "sales": "company_id,invoice_number",
+        "sales_items": "id",
+        "sales_returns": "company_id,return_no",
         "purchases": "company_id,purchase_number",
+        "purchase_items": "id",
+        "purchase_returns": "company_id,return_no",
     }
     return mapping.get((table_name or "").strip(), "")
 

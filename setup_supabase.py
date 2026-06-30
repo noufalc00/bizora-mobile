@@ -41,8 +41,10 @@ TABLE_ORDER = (
     "ledger_accounts",
     "sales",
     "sales_items",
+    "sales_returns",
     "purchases",
     "purchase_items",
+    "purchase_returns",
     "ledger_entries",
 )
 

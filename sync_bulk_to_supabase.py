@@ -4,6 +4,7 @@ Bulk push local SQLite accounting data to Supabase for mobile web.
 
 Run once on the desktop PC after setup_supabase.py:
 
+    python setup_supabase.py
     python sync_bulk_to_supabase.py
 
 Optional:
@@ -20,6 +21,63 @@ from db import get_default_database_path
 from sync_service import get_supabase_client, upsert_records
 
 
+SYNC_PLAN: tuple[tuple[str, str, str], ...] = (
+    ("companies", "SELECT * FROM companies {company_filter}", "id"),
+    (
+        "parties",
+        "SELECT * FROM parties WHERE company_id IN ({company_ids})",
+        "id",
+    ),
+    (
+        "products",
+        "SELECT * FROM products WHERE company_id IN ({company_ids})",
+        "id",
+    ),
+    (
+        "ledger_accounts",
+        "SELECT * FROM ledger_accounts WHERE company_id IN ({company_ids})",
+        "id",
+    ),
+    (
+        "sales",
+        "SELECT * FROM sales WHERE company_id IN ({company_ids})",
+        "company_id,invoice_number",
+    ),
+    (
+        "sales_items",
+        "SELECT si.* FROM sales_items si INNER JOIN sales s ON s.id = si.sale_id "
+        "WHERE s.company_id IN ({company_ids})",
+        "id",
+    ),
+    (
+        "sales_returns",
+        "SELECT * FROM sales_returns WHERE company_id IN ({company_ids})",
+        "company_id,return_no",
+    ),
+    (
+        "purchases",
+        "SELECT * FROM purchases WHERE company_id IN ({company_ids})",
+        "company_id,purchase_number",
+    ),
+    (
+        "purchase_items",
+        "SELECT pi.* FROM purchase_items pi INNER JOIN purchases p ON p.id = pi.purchase_id "
+        "WHERE p.company_id IN ({company_ids})",
+        "id",
+    ),
+    (
+        "purchase_returns",
+        "SELECT * FROM purchase_returns WHERE company_id IN ({company_ids})",
+        "company_id,return_no",
+    ),
+    (
+        "ledger_entries",
+        "SELECT * FROM ledger_entries WHERE company_id IN ({company_ids})",
+        "id",
+    ),
+)
+
+
 def _fetch_rows(db_path: str, query: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
     """Fetch rows from SQLite as dictionaries."""
     connection = sqlite3.connect(db_path)
@@ -34,13 +92,13 @@ def _fetch_rows(db_path: str, query: str, params: tuple[Any, ...] = ()) -> list[
 
 def bulk_sync_to_supabase(company_id: Optional[int] = None) -> bool:
     """
-    Upsert companies, parties, sales, and purchases into Supabase.
+    Upsert core business tables into Supabase for mobile cloud mode.
 
     Args:
         company_id: Optional company filter. When omitted, sync all companies.
 
     Returns:
-        True when at least one table syncs without batch failures.
+        True when no batch failures occur.
     """
     client = get_supabase_client()
     if client is None:
@@ -61,36 +119,20 @@ def bulk_sync_to_supabase(company_id: Optional[int] = None) -> bool:
 
     company_ids = [int(row["id"]) for row in companies if row.get("id") is not None]
     placeholders = ",".join("?" for _ in company_ids)
-
-    parties = _fetch_rows(
-        db_path,
-        f"SELECT * FROM parties WHERE company_id IN ({placeholders})",
-        tuple(company_ids),
-    )
-    sales = _fetch_rows(
-        db_path,
-        f"SELECT * FROM sales WHERE company_id IN ({placeholders})",
-        tuple(company_ids),
-    )
-    purchases = _fetch_rows(
-        db_path,
-        f"SELECT * FROM purchases WHERE company_id IN ({placeholders})",
-        tuple(company_ids),
-    )
+    company_ids_sql = placeholders
 
     print(f"Local database: {db_path}")
-    print(
-        f"Preparing sync -> companies: {len(companies)}, parties: {len(parties)}, "
-        f"sales: {len(sales)}, purchases: {len(purchases)}"
-    )
+    print(f"Companies selected: {len(companies)} -> ids {company_ids}")
 
     total_failed = 0
-    for table_name, rows, conflict in (
-        ("companies", companies, "id"),
-        ("parties", parties, "id"),
-        ("sales", sales, "company_id,invoice_number"),
-        ("purchases", purchases, "company_id,purchase_number"),
-    ):
+    for table_name, query_template, conflict in SYNC_PLAN:
+        if table_name == "companies":
+            query = query_template.format(company_filter=company_filter)
+            rows = _fetch_rows(db_path, query, params)
+        else:
+            query = query_template.format(company_ids=company_ids_sql)
+            rows = _fetch_rows(db_path, query, tuple(company_ids))
+
         synced, failed = upsert_records(table_name, rows, conflict)
         total_failed += failed
         print(f"  {table_name}: synced {synced} row(s), failed batches {failed}")
@@ -101,7 +143,7 @@ def bulk_sync_to_supabase(company_id: Optional[int] = None) -> bool:
     print("")
     print("Bulk sync complete.")
     print(f"Active company for mobile: id={active_id}, name={active_name}")
-    print("Set Render env MOBILE_COMPANY_ID to this id, or leave empty for auto-detect.")
+    print("Render env: MOBILE_COMPANY_ID=%s (or leave empty for auto-detect)" % active_id)
     return total_failed == 0
 
 
