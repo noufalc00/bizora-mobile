@@ -3,6 +3,7 @@
 
   const THEME_KEY = "bizora_mobile_theme";
   const SESSION_KEY = "bizora_mobile_session";
+  const LAST_NORMAL_COMPANY_KEY = "bizora_mobile_last_normal_company";
   const FETCH_TIMEOUT_MS = 60000;
   const LOGO_LONG_PRESS_MS = 800;
 
@@ -112,6 +113,8 @@
     companyModalList: document.getElementById("companyModalList"),
     companyModalClose: document.getElementById("companyModalClose"),
     logoutBtn: document.getElementById("logoutBtn"),
+    loginThemeBtn: document.getElementById("loginThemeToggleBtn"),
+    brandCompanyName: document.getElementById("brandCompanyName"),
     main: document.getElementById("mainContent"),
     subtitle: document.getElementById("pageSubtitle"),
     backBtn: document.getElementById("navBackBtn"),
@@ -253,7 +256,31 @@
       themeMeta.setAttribute("content", state.colors.app_bg || "#121212");
     }
     el.themeBtn.textContent = state.theme === "dark" ? "☀" : "☾";
+    if (el.loginThemeBtn) {
+      el.loginThemeBtn.textContent = state.theme === "dark" ? "☀" : "☾";
+    }
     storage.set(THEME_KEY, state.theme);
+  }
+
+  function saveLastNormalCompany(company) {
+    if (!company || company.id == null || state.isSecretSession) {
+      return;
+    }
+    const visibility = String(company.visibility || "normal").toLowerCase();
+    if (visibility === "secret") {
+      return;
+    }
+    storage.set(LAST_NORMAL_COMPANY_KEY, String(company.id));
+  }
+
+  function refreshTopbarCompany() {
+    if (!el.brandCompanyName) {
+      return;
+    }
+    const name = (state.session && state.session.company_name)
+      || (state.selectedCompany && state.selectedCompany.business_name)
+      || "";
+    el.brandCompanyName.textContent = name;
   }
 
   async function loadTheme() {
@@ -271,6 +298,7 @@
 
   function setSubtitle(text) {
     el.subtitle.textContent = text;
+    refreshTopbarCompany();
   }
 
   function setActiveTab(view) {
@@ -352,15 +380,22 @@
   }
 
   async function loadLoginBootstrap() {
-    const payload = await apiGet("/api/auth/bootstrap");
+    const savedId = storage.get(LAST_NORMAL_COMPANY_KEY, "").trim();
+    const query = savedId ? `?last_company_id=${encodeURIComponent(savedId)}` : "";
+    const payload = await apiGet(`/api/auth/bootstrap${query}`);
     if (payload.company) {
       state.selectedCompany = payload.company;
       state.isSecretSession = false;
+      saveLastNormalCompany(payload.company);
     } else {
       state.selectedCompany = null;
       state.isSecretSession = false;
     }
-    populateUsernameOptions(payload.usernames || []);
+    if (state.selectedCompany && state.selectedCompany.id) {
+      await loadCompanyUsers(Number(state.selectedCompany.id));
+    } else {
+      populateUsernameOptions(payload.usernames || []);
+    }
     refreshLoginCompanyDisplay();
   }
 
@@ -413,6 +448,9 @@
           }
           state.selectedCompany = selected;
           state.isSecretSession = state.companyModalVisibility === "secret";
+          if (!state.isSecretSession) {
+            saveLastNormalCompany(selected);
+          }
           el.loginPassword.value = "";
           await loadCompanyUsers(companyId);
           refreshLoginCompanyDisplay();
@@ -445,8 +483,12 @@
         return;
       }
       saveSession(payload.session || null);
+      if (!state.isSecretSession && payload.company) {
+        saveLastNormalCompany(payload.company);
+      }
       state.navigation = null;
       showAppShell();
+      refreshTopbarCompany();
       await renderDashboard();
       showToast(`Welcome, ${payload.session.username}`);
     } catch (error) {
@@ -461,7 +503,6 @@
     clearSession();
     state.navigation = null;
     state.dashboard = null;
-    state.selectedCompany = null;
     state.isSecretSession = false;
     el.loginPassword.value = "";
     hideSecretFileButton();
@@ -471,9 +512,10 @@
     });
   }
 
-  function installLogoLongPress() {
+  function installLogoSecretHandlers() {
     let pressTimer = null;
     let lastTap = 0;
+    let longPressTriggered = false;
 
     const clearPress = () => {
       if (pressTimer) {
@@ -483,30 +525,50 @@
     };
 
     const startPress = () => {
+      longPressTriggered = false;
       clearPress();
       pressTimer = window.setTimeout(() => {
+        longPressTriggered = true;
         revealSecretFileButton();
       }, LOGO_LONG_PRESS_MS);
     };
 
-    el.loginLogoBox.addEventListener("touchstart", (event) => {
+    const closeSecretIfVisible = () => {
+      if (!el.secretFileBtn.classList.contains("hidden")) {
+        hideSecretFileButton();
+      }
+    };
+
+    el.loginLogoBox.addEventListener("dblclick", (event) => {
       event.preventDefault();
-      startPress();
-    }, { passive: false });
+      closeSecretIfVisible();
+    });
+
+    el.loginLogoBox.addEventListener("click", () => {
+      if (longPressTriggered) {
+        longPressTriggered = false;
+        return;
+      }
+      const now = Date.now();
+      if (now - lastTap < 400) {
+        closeSecretIfVisible();
+        lastTap = 0;
+        return;
+      }
+      lastTap = now;
+    });
+
+    el.loginLogoBox.addEventListener("touchstart", (event) => {
+      if (event.target.closest(".login-logo-box")) {
+        startPress();
+      }
+    }, { passive: true });
     el.loginLogoBox.addEventListener("touchend", clearPress);
     el.loginLogoBox.addEventListener("touchmove", clearPress);
     el.loginLogoBox.addEventListener("touchcancel", clearPress);
     el.loginLogoBox.addEventListener("mousedown", startPress);
     el.loginLogoBox.addEventListener("mouseup", clearPress);
     el.loginLogoBox.addEventListener("mouseleave", clearPress);
-
-    el.loginLogoBox.addEventListener("click", () => {
-      const now = Date.now();
-      if (now - lastTap < 350 && !el.secretFileBtn.classList.contains("hidden")) {
-        hideSecretFileButton();
-      }
-      lastTap = now;
-    });
   }
 
   async function renderLoginScreen() {
@@ -870,7 +932,7 @@
   }
 
   function bindEvents() {
-    installLogoLongPress();
+    installLogoSecretHandlers();
 
     el.fileMenuBtn.addEventListener("click", () => {
       el.fileMenuPanel.classList.toggle("hidden");
@@ -920,6 +982,14 @@
       showToast(`${state.theme === "dark" ? "Dark" : "Light"} mode applied`);
     });
 
+    if (el.loginThemeBtn) {
+      el.loginThemeBtn.addEventListener("click", async () => {
+        state.theme = state.theme === "dark" ? "light" : "dark";
+        await loadTheme();
+        showToast(`${state.theme === "dark" ? "Dark" : "Light"} mode applied`);
+      });
+    }
+
     el.backBtn.addEventListener("click", () => {
       if (state.view === "report") {
         const section = state.reportTitle && state.navigation
@@ -941,6 +1011,7 @@
       stopLoading();
       if (state.session && state.session.company_id) {
         showAppShell();
+        refreshTopbarCompany();
         await renderDashboard();
         return;
       }

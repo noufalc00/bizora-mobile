@@ -7,16 +7,19 @@
   <meta name="theme-color" content="#121212">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <title>BIZORA Mobile</title>
-  <link rel="stylesheet" href="/static/mobile.css?v=1.5">
+  <link rel="stylesheet" href="/static/mobile.css?v=1.6">
 </head>
 <body>
   <div id="loginScreen" class="login-screen">
     <header class="login-menu-row">
-      <div class="file-menu-wrap">
-        <button id="fileMenuBtn" class="file-menu-btn" type="button">File</button>
-        <div id="fileMenuPanel" class="file-menu-panel hidden">
-          <button id="openCompaniesBtn" class="file-menu-item" type="button">Open Companies</button>
+      <div class="login-menu-actions">
+        <div class="file-menu-wrap">
+          <button id="fileMenuBtn" class="file-menu-btn" type="button">File</button>
+          <div id="fileMenuPanel" class="file-menu-panel hidden">
+            <button id="openCompaniesBtn" class="file-menu-item" type="button">Open Companies</button>
+          </div>
         </div>
+        <button id="loginThemeToggleBtn" class="icon-btn login-theme-btn" type="button" aria-label="Toggle color mode">&#9790;</button>
       </div>
     </header>
     <div class="login-body">
@@ -55,7 +58,10 @@
       <button id="navBackBtn" class="icon-btn hidden" type="button" aria-label="Back">&#8592;</button>
       <div class="brand-block">
         <img src="/static/app_logo.png" alt="BIZORA" class="brand-logo">
-        <div id="pageSubtitle" class="brand-subtitle">Dashboard</div>
+        <div class="brand-text-block">
+          <div id="brandCompanyName" class="brand-company-name"></div>
+          <div id="pageSubtitle" class="brand-subtitle">Dashboard</div>
+        </div>
       </div>
       <button id="logoutBtn" class="icon-btn" type="button" aria-label="Log out">&#9099;</button>
       <button id="themeToggleBtn" class="icon-btn" type="button" aria-label="Toggle color mode">&#9790;</button>
@@ -81,6 +87,6 @@
     </div>
   </div>
 
-  <script src="/static/mobile.js?v=1.5"></script>
+  <script src="/static/mobile.js?v=1.6"></script>
 </body>
 </html>

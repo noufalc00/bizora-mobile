@@ -47,10 +47,16 @@ class MobileAuthService:
         except Exception as exc:
             return {"success": False, "message": str(exc), "companies": []}
 
-    def get_bootstrap(self) -> dict[str, Any]:
+    def get_bootstrap(self, last_company_id: Optional[int] = None) -> dict[str, Any]:
         """Return the last active normal company shown on the desktop login screen."""
         try:
-            company = self.db.get_active_company(visibility=COMPANY_VISIBILITY_NORMAL)
+            company = None
+            if last_company_id:
+                candidate = self.db.get_company_by_id(last_company_id)
+                if candidate and str(candidate.get("visibility") or "normal").lower() != "secret":
+                    company = candidate
+            if not company:
+                company = self.db.get_active_company(visibility=COMPANY_VISIBILITY_NORMAL)
             payload = {
                 "success": True,
                 "company": self._public_company_row(company) if company else None,

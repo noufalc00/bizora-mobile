@@ -154,15 +154,32 @@ class MobileSupabaseService:
         except Exception as exc:
             return {"success": False, "message": str(exc), "companies": []}
 
-    def get_bootstrap(self) -> dict[str, Any]:
+    def get_bootstrap(self, last_company_id: Optional[int] = None) -> dict[str, Any]:
         """Return the active normal company for the cloud login screen."""
         try:
-            rows = self._fetch_company_rows(active_only=True, limit=5)
+            import os
+
+            rows = self._fetch_company_rows(limit=50)
             normal_rows = [
                 row for row in rows
                 if str(row.get("visibility") or "normal").strip().lower() == "normal"
             ]
-            chosen = normal_rows[0] if normal_rows else (rows[0] if rows else None)
+            chosen = None
+            if last_company_id is not None:
+                chosen = next(
+                    (row for row in normal_rows if int(row.get("id") or 0) == int(last_company_id)),
+                    None,
+                )
+            if chosen is None:
+                forced = (os.getenv("MOBILE_COMPANY_ID") or "").strip()
+                if forced.isdigit():
+                    chosen = next(
+                        (row for row in normal_rows if int(row.get("id") or 0) == int(forced)),
+                        None,
+                    )
+            if chosen is None:
+                active_rows = [row for row in normal_rows if row.get("is_active")]
+                chosen = active_rows[0] if active_rows else (normal_rows[0] if normal_rows else None)
             company = self._public_company_row(chosen) if chosen else None
             return {
                 "success": True,

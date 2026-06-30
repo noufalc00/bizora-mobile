@@ -235,13 +235,12 @@ def api_navigation() -> dict[str, Any]:
 
 
 @app.get("/api/auth/bootstrap")
-def api_auth_bootstrap() -> dict[str, Any]:
+def api_auth_bootstrap(
+    last_company_id: Optional[int] = Query(default=None),
+) -> dict[str, Any]:
     """Return last active company and usernames for the mobile login screen."""
     auth_service, source = _auth_backend()
-    if source == "supabase":
-        payload = auth_service.get_bootstrap()
-    else:
-        payload = auth_service.get_bootstrap()
+    payload = auth_service.get_bootstrap(last_company_id=last_company_id)
     payload["data_source"] = _data_source
     return payload
 

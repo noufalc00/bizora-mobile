@@ -70,6 +70,25 @@ button, input, select {
   min-width: 0;
 }
 
+.brand-text-block {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.brand-company-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent-label);
+  line-height: 1.2;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .brand-logo {
   height: 42px;
   width: auto;
@@ -377,6 +396,17 @@ button, input, select {
   border-bottom: 1px solid var(--border);
 }
 
+.login-menu-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.login-theme-btn {
+  flex-shrink: 0;
+}
+
 .file-menu-wrap {
   position: relative;
   display: inline-block;
@@ -446,12 +476,13 @@ button, input, select {
 }
 
 .login-logo-box {
-  border: 1px solid var(--border);
-  border-radius: 12px;
+  border: 3px solid var(--logo-stage-border, var(--border));
+  border-radius: 0;
   padding: 10px 14px;
-  background: var(--panel-bg);
-  touch-action: none;
+  background: var(--logo-stage-bg, var(--panel-bg));
+  touch-action: manipulation;
   user-select: none;
+  cursor: pointer;
 }
 
 .login-logo-image {
