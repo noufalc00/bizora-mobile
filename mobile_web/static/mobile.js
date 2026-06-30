@@ -386,6 +386,10 @@
     el.companyModalList.innerHTML = '<div class="empty-state">Loading companies...</div>';
     try {
       const payload = await apiGet(`/api/companies?visibility=${encodeURIComponent(state.companyModalVisibility)}`);
+      if (!payload.success) {
+        el.companyModalList.innerHTML = `<div class="error-state">${payload.message || "Could not load companies."}</div>`;
+        return;
+      }
       const companies = payload.companies || [];
       if (!companies.length) {
         const emptyText = state.companyModalVisibility === "secret"

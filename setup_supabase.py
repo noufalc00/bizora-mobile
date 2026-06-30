@@ -410,6 +410,19 @@ def execute_create_table(cursor, table_name: str, create_sql: str) -> None:
         print(f"Table already exists: {table_name}")
 
 
+def apply_post_migrations(cursor) -> None:
+    """Apply lightweight ALTER migrations for columns added after initial deploy."""
+    migrations = (
+        "ALTER TABLE companies ADD COLUMN IF NOT EXISTS visibility VARCHAR(50) DEFAULT 'normal'",
+    )
+    for statement in migrations:
+        try:
+            cursor.execute(statement)
+            print(f"Applied migration: {statement}")
+        except pg_errors.Error as exc:
+            print(f"Migration skipped: {exc}")
+
+
 def main() -> int:
     """Connect to Supabase and create the core accounting tables."""
     try:
@@ -428,6 +441,8 @@ def main() -> int:
         print("Starting Supabase schema setup...")
         for table_name, create_sql in statements:
             execute_create_table(cursor, table_name, create_sql)
+
+        apply_post_migrations(cursor)
 
         print("Database setup complete!")
         return 0

@@ -70,39 +70,86 @@ class MobileSupabaseService:
             print(f"[MOBILE-SUPABASE] Company resolve failed: {exc}")
         return None
 
+    _COMPANY_BASE_COLUMNS = (
+        "id,business_name,gstin,phone_number,email,state,is_active"
+    )
+
+    def _fetch_company_rows(
+        self,
+        *,
+        company_id: Optional[int] = None,
+        active_only: bool = False,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Fetch company rows from Supabase, with visibility when the column exists."""
+        try:
+            query = (
+                self._client()
+                .table("companies")
+                .select(f"{self._COMPANY_BASE_COLUMNS},visibility")
+                .limit(limit)
+            )
+        except Exception as exc:
+            print(f"[MOBILE-SUPABASE] Company query init failed: {exc}")
+            return []
+
+        if company_id is not None:
+            query = query.eq("id", company_id)
+        if active_only:
+            query = query.eq("is_active", True)
+        if company_id is None:
+            query = query.order("id")
+
+        try:
+            rows = query.execute().data or []
+        except Exception as exc:
+            message = str(exc)
+            if "visibility" not in message:
+                print(f"[MOBILE-SUPABASE] Company query failed: {exc}")
+                return []
+            fallback = (
+                self._client()
+                .table("companies")
+                .select(self._COMPANY_BASE_COLUMNS)
+                .limit(limit)
+            )
+            if company_id is not None:
+                fallback = fallback.eq("id", company_id)
+            if active_only:
+                fallback = fallback.eq("is_active", True)
+            if company_id is None:
+                fallback = fallback.order("id")
+            rows = fallback.execute().data or []
+            for row in rows:
+                row["visibility"] = "normal"
+
+        return rows
+
+    @staticmethod
+    def _public_company_row(row: dict[str, Any]) -> dict[str, Any]:
+        """Return a safe company payload for the mobile login UI."""
+        return {
+            "id": row.get("id"),
+            "business_name": row.get("business_name") or "",
+            "gstin": row.get("gstin") or "",
+            "phone_number": row.get("phone_number") or "",
+            "email": row.get("email") or "",
+            "state": row.get("state") or "",
+            "is_active": bool(row.get("is_active")),
+            "visibility": str(row.get("visibility") or "normal").strip().lower(),
+        }
+
     def list_companies(self, visibility: Optional[str] = None) -> dict[str, Any]:
         """List synced companies available for cloud mobile login."""
         try:
-            response = (
-                self._client()
-                .table("companies")
-                .select(
-                    "id,business_name,gstin,phone_number,email,state,is_active,visibility"
-                )
-                .order("id")
-                .limit(50)
-                .execute()
-            )
-            rows = response.data or []
+            rows = self._fetch_company_rows()
             if visibility:
                 pool = visibility.strip().lower()
                 rows = [
                     row for row in rows
                     if str(row.get("visibility") or "normal").strip().lower() == pool
                 ]
-            companies = [
-                {
-                    "id": row.get("id"),
-                    "business_name": row.get("business_name") or "",
-                    "gstin": row.get("gstin") or "",
-                    "phone_number": row.get("phone_number") or "",
-                    "email": row.get("email") or "",
-                    "state": row.get("state") or "",
-                    "is_active": bool(row.get("is_active")),
-                    "visibility": str(row.get("visibility") or "normal").strip().lower(),
-                }
-                for row in rows
-            ]
+            companies = [self._public_company_row(row) for row in rows]
             return {"success": True, "companies": companies}
         except Exception as exc:
             return {"success": False, "message": str(exc), "companies": []}
@@ -110,34 +157,13 @@ class MobileSupabaseService:
     def get_bootstrap(self) -> dict[str, Any]:
         """Return the active normal company for the cloud login screen."""
         try:
-            response = (
-                self._client()
-                .table("companies")
-                .select(
-                    "id,business_name,gstin,phone_number,email,state,is_active,visibility"
-                )
-                .eq("is_active", True)
-                .limit(5)
-                .execute()
-            )
-            rows = response.data or []
+            rows = self._fetch_company_rows(active_only=True, limit=5)
             normal_rows = [
                 row for row in rows
                 if str(row.get("visibility") or "normal").strip().lower() == "normal"
             ]
             chosen = normal_rows[0] if normal_rows else (rows[0] if rows else None)
-            company = None
-            if chosen:
-                company = {
-                    "id": chosen.get("id"),
-                    "business_name": chosen.get("business_name") or "",
-                    "gstin": chosen.get("gstin") or "",
-                    "phone_number": chosen.get("phone_number") or "",
-                    "email": chosen.get("email") or "",
-                    "state": chosen.get("state") or "",
-                    "is_active": bool(chosen.get("is_active")),
-                    "visibility": str(chosen.get("visibility") or "normal").strip().lower(),
-                }
+            company = self._public_company_row(chosen) if chosen else None
             return {
                 "success": True,
                 "company": company,
@@ -149,20 +175,11 @@ class MobileSupabaseService:
     def cloud_login(self, company_id: int, username: str, *, is_secret: bool = False) -> dict[str, Any]:
         """Open a synced company for read-only cloud mobile access."""
         try:
-            response = (
-                self._client()
-                .table("companies")
-                .select(
-                    "id,business_name,gstin,phone_number,email,state,is_active,visibility"
-                )
-                .eq("id", company_id)
-                .limit(1)
-                .execute()
-            )
-            rows = response.data or []
+            rows = self._fetch_company_rows(company_id=company_id, limit=1)
             if not rows:
                 return {"success": False, "message": "Company not found in Supabase."}
             company = rows[0]
+            public_company = self._public_company_row(company)
             return {
                 "success": True,
                 "message": "",
@@ -173,16 +190,7 @@ class MobileSupabaseService:
                     "role": "Admin",
                     "is_secret": bool(is_secret),
                 },
-                "company": {
-                    "id": company.get("id"),
-                    "business_name": company.get("business_name") or "",
-                    "gstin": company.get("gstin") or "",
-                    "phone_number": company.get("phone_number") or "",
-                    "email": company.get("email") or "",
-                    "state": company.get("state") or "",
-                    "is_active": bool(company.get("is_active")),
-                    "visibility": str(company.get("visibility") or "normal").strip().lower(),
-                },
+                "company": public_company,
             }
         except Exception as exc:
             return {"success": False, "message": str(exc)}
