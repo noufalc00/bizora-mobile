@@ -106,8 +106,8 @@ COLOR_TOKENS: dict[str, dict[str, str]] = {
         "accent_label": LIGHT_ACCENT_LABEL,
         "accent_highlight": "#2E7D32",
         "muted_text": LIGHT_MUTED_TEXT,
-        "logo_stage_bg": "transparent",
-        "logo_stage_border": "#1a2b44",
+        "logo_stage_bg": "#F0F4FA",
+        "logo_stage_border": "#0E7490",
     },
 }
 

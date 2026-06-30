@@ -381,7 +381,12 @@
   }
 
   function setSubtitle(text) {
-    el.subtitle.textContent = text;
+    if (!el.subtitle) {
+      return;
+    }
+    const hideSubtitle = !text || text === "Dashboard";
+    el.subtitle.textContent = hideSubtitle ? "" : text;
+    el.subtitle.classList.toggle("hidden", hideSubtitle);
     refreshTopbarCompany();
   }
 
@@ -417,6 +422,11 @@
 
   function todayIsoDate() {
     return new Date().toISOString().slice(0, 10);
+  }
+
+  function monthStartIsoDate() {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
   }
 
   function showLoginScreen() {
@@ -610,6 +620,22 @@
       event.preventDefault();
     });
 
+    const loginLogoImage = el.loginLogoBox.querySelector(".login-logo-image");
+    if (loginLogoImage) {
+      loginLogoImage.addEventListener("error", () => {
+        if (!loginLogoImage.dataset.fallbackApplied) {
+          loginLogoImage.dataset.fallbackApplied = "1";
+          loginLogoImage.src = "/static/app_logo.png?v=1.9";
+        }
+      });
+      loginLogoImage.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+      });
+      loginLogoImage.addEventListener("dragstart", (event) => {
+        event.preventDefault();
+      });
+    }
+
     el.loginLogoBox.addEventListener("dblclick", (event) => {
       event.preventDefault();
       closeSecretIfVisible();
@@ -671,7 +697,7 @@
     state.view = "dashboard";
     state.reportSlug = null;
     setActiveTab("dashboard");
-    setSubtitle("Dashboard");
+    setSubtitle("");
     el.backBtn.classList.add("hidden");
     const stopLoading = startLoadingProgress("Loading dashboard...");
 
@@ -729,17 +755,16 @@
     const items = (sections[sectionName] || [])
       .map((entry) => {
         if (entry.type === "divider") {
-          return `<div class="menu-divider">${entry.title}</div>`;
+          return `<div class="menu-divider">${entry.title.toUpperCase()}</div>`;
         }
         return `<button class="menu-item" data-slug="${entry.slug}" type="button">${entry.title}</button>`;
       })
       .join("");
 
     return `
-      <section>
-        <div class="menu-section-title">${sectionName}</div>
+      <nav class="sidebar-nav" aria-label="${sectionName}">
         ${items || '<div class="empty-state">No routes found</div>'}
-      </section>
+      </nav>
     `;
   }
 
@@ -770,7 +795,13 @@
       return filter.default;
     }
     if (filter.type === "date") {
-      return new Date().toISOString().slice(0, 10);
+      if (filter.key === "from_date") {
+        return monthStartIsoDate();
+      }
+      if (filter.key === "to_date") {
+        return todayIsoDate();
+      }
+      return todayIsoDate();
     }
     if (filter.type === "boolean") {
       return Boolean(filter.default);
@@ -940,28 +971,106 @@
     return filters;
   }
 
-  function renderResultTable(rows) {
+  const MONEY_COLUMN_KEYS = new Set([
+    "taxable_amount",
+    "discount_total",
+    "discount",
+    "tax_total",
+    "tax_amount",
+    "grand_total",
+    "settled_amount",
+    "amount_received",
+    "balance_amount",
+    "debit",
+    "credit",
+    "opening_balance",
+    "closing_balance",
+    "period_debit",
+    "period_credit",
+    "net_amount",
+    "rate",
+    "gross_value",
+    "cgst_amount",
+    "sgst_amount",
+    "igst_amount",
+    "cess_amount",
+    "round_off",
+    "quantity",
+    "quantity_total",
+    "profit",
+    "sales_value",
+    "cost_value",
+    "margin_percent",
+    "tax_percent",
+    "cgst",
+    "sgst",
+    "igst",
+    "cess",
+  ]);
+
+  function isNumericColumn(columnKey) {
+    if (MONEY_COLUMN_KEYS.has(columnKey)) {
+      return true;
+    }
+    return (
+      columnKey.endsWith("_amount")
+      || columnKey.endsWith("_total")
+      || columnKey.endsWith("_value")
+      || columnKey.endsWith("_percent")
+    );
+  }
+
+  function formatTableCell(columnKey, value) {
+    if (value === null || value === undefined || value === "") {
+      return "";
+    }
+    if (MONEY_COLUMN_KEYS.has(columnKey) && !Number.isNaN(Number(value))) {
+      return formatMoney(value);
+    }
+    return value;
+  }
+
+  function renderResultTable(rows, columnsMeta, rowCount) {
     if (!rows || !rows.length) {
       return '<div class="empty-state">No records found for the selected filters.</div>';
     }
-    const columns = Array.from(
-      rows.reduce((set, row) => {
-        Object.keys(row || {}).forEach((key) => set.add(key));
-        return set;
-      }, new Set()),
-    ).slice(0, 8);
 
-    const head = columns.map((column) => `<th>${column}</th>`).join("");
+    const columns = (columnsMeta && columnsMeta.length)
+      ? columnsMeta
+      : Array.from(
+          rows.reduce((set, row) => {
+            Object.keys(row || {}).forEach((key) => set.add(key));
+            return set;
+          }, new Set()),
+        )
+          .slice(0, 12)
+          .map((key) => ({ key, label: key.replace(/_/g, " ") }));
+
+    const head = `<th class="col-sl">SL</th>${columns
+      .map((column) => {
+        const numClass = isNumericColumn(column.key) ? " num" : "";
+        return `<th class="${numClass.trim()}">${column.label || column.key}</th>`;
+      })
+      .join("")}`;
     const body = rows
-      .map((row) => {
+      .map((row, rowIndex) => {
         const cells = columns
-          .map((column) => `<td>${row[column] != null ? row[column] : ""}</td>`)
+          .map((column) => {
+            const numClass = isNumericColumn(column.key) ? " num" : "";
+            return `<td class="${numClass.trim()}">${formatTableCell(column.key, row[column.key])}</td>`;
+          })
           .join("");
-        return `<tr>${cells}</tr>`;
+        return `<tr><td class="col-sl">${rowIndex + 1}</td>${cells}</tr>`;
       })
       .join("");
 
+    const meta =
+      rowCount != null
+        ? `<p class="report-meta">${rowCount} record${rowCount === 1 ? "" : "s"}</p>`
+        : `<p class="report-meta">${rows.length} record${rows.length === 1 ? "" : "s"}</p>`;
+
     return `
+      ${meta}
       <div class="table-wrap">
         <table class="data-table">
           <thead><tr>${head}</tr></thead>
@@ -983,7 +1092,11 @@
         resultRoot.innerHTML = `<div class="error-state">${payload.message || "Report failed."}</div>`;
         return;
       }
-      resultRoot.innerHTML = renderResultTable(payload.rows || []);
+      resultRoot.innerHTML = renderResultTable(
+        payload.rows || [],
+        payload.columns || [],
+        payload.row_count,
+      );
     } catch (error) {
       resultRoot.innerHTML = `<div class="error-state">${formatFetchError(error)}</div>`;
     }

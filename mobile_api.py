@@ -370,19 +370,21 @@ def mobile_css_asset() -> FileResponse:
 
 
 @app.get("/static/app_logo.png")
+@app.get("/static/app_logo_mobile.png")
 def mobile_logo_asset() -> FileResponse:
-    """Serve the BIZORA brand logo for the mobile top bar."""
-    asset = MOBILE_STATIC_DIR / "app_logo.png"
-    if not asset.is_file():
-        fallback = ROOT_DIR / "assets" / "icons" / "app_logo.png"
-        if fallback.is_file():
-            asset = fallback
-        else:
-            raise HTTPException(status_code=404, detail="app_logo.png not found")
+    """Serve the optimized BIZORA brand logo for mobile screens."""
+    candidates = (
+        MOBILE_STATIC_DIR / "app_logo_mobile.png",
+        MOBILE_STATIC_DIR / "app_logo.png",
+        ROOT_DIR / "assets" / "icons" / "app_logo.png",
+    )
+    asset = next((path for path in candidates if path.is_file()), None)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="app_logo.png not found")
     return FileResponse(
         asset,
         media_type="image/png",
-        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        headers={"Cache-Control": "public, max-age=86400"},
     )
 
 

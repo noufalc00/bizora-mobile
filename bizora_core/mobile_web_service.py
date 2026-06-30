@@ -11,6 +11,7 @@ from config import CURRENCY_SYMBOL, active_company_manager
 from db import Database, get_default_database_path
 from bizora_core.dashboard_logic import DashboardLogic
 from bizora_core.mobile_report_lookups import build_local_report_lookups
+from bizora_core.mobile_report_display import build_report_table_payload
 from bizora_core.mobile_web_registry import (
     VOUCHER_BOOK_MODES,
     build_navigation_payload,
@@ -201,7 +202,20 @@ class MobileWebService:
                 "rows": [],
             }
         try:
-            return handler(resolved_id, definition, filters or {})
+            result = handler(resolved_id, definition, filters or {})
+            if result.get("success"):
+                rows = result.get("rows") or []
+                if handler_name == "voucher_book":
+                    from bizora_core.report_column_catalog import build_voucher_table_payload
+
+                    table_payload = build_voucher_table_payload(
+                        rows,
+                        (filters or {}).get("report_mode"),
+                    )
+                else:
+                    table_payload = build_report_table_payload(rows)
+                result.update(table_payload)
+            return result
         except Exception as exc:
             print(f"[MOBILE] Report '{slug}' failed: {exc}")
             return {"success": False, "message": str(exc), "rows": []}

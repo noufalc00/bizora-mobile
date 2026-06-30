@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Optional
 
+from bizora_core.mobile_report_display import build_report_table_payload
 from bizora_core.mobile_report_lookups import build_supabase_report_lookups
 from bizora_core.mobile_supabase_charts import build_monthly_chart_series
 from bizora_core.mobile_supabase_ledger import (
@@ -653,7 +654,10 @@ class MobileSupabaseService:
 
         if slug == "ledger":
             try:
-                return self._run_cloud_ledger(resolved_id, filters)
+                result = self._run_cloud_ledger(resolved_id, filters)
+                table_payload = build_report_table_payload(result.get("rows", []))
+                result.update(table_payload)
+                return result
             except Exception as exc:
                 return {
                     "success": False,
@@ -661,6 +665,17 @@ class MobileSupabaseService:
                     "rows": [],
                     "data_source": "supabase",
                 }
+
+        if definition.get("handler") == "voucher_book":
+            from bizora_core.mobile_supabase_voucher_reports import run_voucher_book_report
+
+            return run_voucher_book_report(
+                self._fetch_table,
+                self._client(),
+                slug,
+                resolved_id,
+                filters,
+            )
 
         source = get_report_source(slug)
         if source is None:
@@ -693,9 +708,17 @@ class MobileSupabaseService:
                     "success": True,
                     "message": "No records found for the selected filters.",
                     "rows": [],
+                    "columns": [],
+                    "row_count": 0,
                     "data_source": "supabase",
                 }
-            return {"success": True, "message": "", "rows": rows, "data_source": "supabase"}
+            table_payload = build_report_table_payload(rows)
+            return {
+                "success": True,
+                "message": "",
+                "data_source": "supabase",
+                **table_payload,
+            }
         except Exception as exc:
             message = str(exc)
             if "Could not find the table" in message:
