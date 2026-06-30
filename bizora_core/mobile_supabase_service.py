@@ -86,6 +86,8 @@ class MobileSupabaseService:
             "day_credit_sale": 0.0,
         }
         recent_activity: list[str] = []
+        sales_rows: list[dict[str, Any]] = []
+        purchases_rows: list[dict[str, Any]] = []
 
         try:
             sales_rows = (
@@ -148,6 +150,11 @@ class MobileSupabaseService:
             "success": True,
             "message": "",
             "company_id": resolved_id,
+            "sync_hint": (
+                "No sales synced yet. On your PC run: python sync_bulk_to_supabase.py"
+                if not sales_rows and not purchases_rows
+                else ""
+            ),
             "summary": summary,
             "summary_labels": {
                 "net_realized_sale": "Net Realized Sale",

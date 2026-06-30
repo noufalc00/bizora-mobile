@@ -278,6 +278,10 @@
         .map((line) => `<div class="activity-item">${line}</div>`)
         .join("");
 
+      const syncHint = payload.sync_hint
+        ? `<div class="empty-state">${payload.sync_hint}</div>`
+        : "";
+
       el.main.innerHTML = `
         <section class="summary-grid">${cards}</section>
         ${renderChart("Monthly Sales", payload.sales_chart || [], "button_success")}
@@ -286,6 +290,7 @@
           <div class="panel-title">Recent Activity</div>
           <div class="activity-list">${activity || '<div class="empty-state">No recent activity</div>'}</div>
         </section>
+        ${syncHint}
       `;
     } catch (error) {
       stopLoading();

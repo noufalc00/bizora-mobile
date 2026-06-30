@@ -13,4 +13,4 @@ services:
       - key: SUPABASE_KEY
         sync: false
       - key: MOBILE_COMPANY_ID
-        value: "1"
+        sync: false

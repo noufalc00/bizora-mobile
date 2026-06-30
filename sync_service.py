@@ -44,6 +44,7 @@ except ImportError:  # pragma: no cover - optional until pip install
     create_client = None  # type: ignore[assignment]
 
 _supabase_client: Optional[Client] = None
+_supabase_column_cache: dict[str, frozenset[str]] = {}
 
 
 def _get_env_value(*keys: str) -> str:
@@ -130,6 +131,97 @@ def _prepare_payload(data_dict: Mapping[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def get_supabase_table_columns(table_name: str) -> frozenset[str]:
+    """Return column names available on the Supabase/PostgreSQL table."""
+    table = (table_name or "").strip()
+    if not table:
+        return frozenset()
+
+    cached = _supabase_column_cache.get(table)
+    if cached is not None:
+        return cached
+
+    database_url = _get_env_value(
+        "DATABASE_URL",
+        "SUPABASE_DATABASE_URL",
+        "SUPABASE_CONNECTION_STRING",
+    )
+    if not database_url:
+        return frozenset()
+
+    try:
+        import psycopg2
+    except ImportError:
+        return frozenset()
+
+    try:
+        connection = psycopg2.connect(database_url)
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = %s
+                    """,
+                    (table,),
+                )
+                columns = frozenset(str(row[0]) for row in cursor.fetchall())
+        finally:
+            connection.close()
+    except Exception as exc:
+        print(f"Could not read Supabase columns for {table}: {exc}")
+        return frozenset()
+
+    _supabase_column_cache[table] = columns
+    return columns
+
+
+def _filter_row_for_supabase(table_name: str, row: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep only columns that exist on the remote Supabase table."""
+    allowed = get_supabase_table_columns(table_name)
+    if not allowed:
+        return _prepare_payload(row)
+    return _prepare_payload({key: value for key, value in row.items() if str(key) in allowed})
+
+
+def upsert_records(
+    table_name: str,
+    rows: list[Mapping[str, Any]],
+    on_conflict: str,
+    *,
+    batch_size: int = 75,
+) -> tuple[int, int]:
+    """
+    Upsert many rows into one Supabase table.
+
+    Returns:
+        Tuple of (synced_row_count, failed_batch_count).
+    """
+    table = (table_name or "").strip()
+    if not table or not rows:
+        return 0, 0
+
+    client = get_supabase_client()
+    if client is None:
+        return 0, 1
+
+    synced = 0
+    failed_batches = 0
+    for start in range(0, len(rows), batch_size):
+        chunk = [_filter_row_for_supabase(table, row) for row in rows[start : start + batch_size]]
+        chunk = [row for row in chunk if row]
+        if not chunk:
+            continue
+        try:
+            client.table(table).upsert(chunk, on_conflict=on_conflict).execute()
+            synced += len(chunk)
+        except Exception as exc:
+            failed_batches += 1
+            print(f"Upsert failed for {table} batch starting at {start}: {exc}")
+    return synced, failed_batches
+
+
 def sync_data(table_name: str, data_dict: Mapping[str, Any]) -> bool:
     """
     Push one record to a Supabase table.
@@ -161,8 +253,29 @@ def sync_data(table_name: str, data_dict: Mapping[str, Any]) -> bool:
         print(f"Successfully synced to {table}")
         return True
     except Exception as exc:
+        conflict_key = _table_conflict_key(table)
+        if conflict_key and "duplicate" in str(exc).lower():
+            try:
+                client.table(table).upsert(payload, on_conflict=conflict_key).execute()
+                print(f"Successfully upserted to {table}")
+                return True
+            except Exception as upsert_exc:
+                print(f"Sync failed for {table}: {upsert_exc}")
+                return False
         print(f"Sync failed for {table}: {exc}")
         return False
+
+
+def _table_conflict_key(table_name: str) -> str:
+    """Return the Supabase upsert conflict key for known tables."""
+    mapping = {
+        "companies": "id",
+        "parties": "id",
+        "products": "id",
+        "sales": "company_id,invoice_number",
+        "purchases": "company_id,purchase_number",
+    }
+    return mapping.get((table_name or "").strip(), "")
 
 
 def sync_sale_after_save(
@@ -184,8 +297,10 @@ def sync_sale_after_save(
     payload: MutableMapping[str, Any] = dict(sale_data)
     payload["company_id"] = company_id
     if sale_id is not None:
+        payload["id"] = sale_id
         payload["local_sale_id"] = sale_id
-    return sync_data("sales", payload)
+    synced, failed = upsert_records("sales", [payload], "company_id,invoice_number")
+    return synced > 0 and failed == 0
 
 
 def sync_purchase_after_save(
@@ -207,8 +322,10 @@ def sync_purchase_after_save(
     payload: MutableMapping[str, Any] = dict(purchase_data)
     payload["company_id"] = company_id
     if purchase_id is not None:
+        payload["id"] = purchase_id
         payload["local_purchase_id"] = purchase_id
-    return sync_data("purchases", payload)
+    synced, failed = upsert_records("purchases", [payload], "company_id,purchase_number")
+    return synced > 0 and failed == 0
 
 
 # ---------------------------------------------------------------------------
