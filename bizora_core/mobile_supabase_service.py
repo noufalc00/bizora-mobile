@@ -9,7 +9,6 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Optional
 
-from bizora_core.mobile_report_display import build_report_table_payload
 from bizora_core.mobile_report_lookups import build_supabase_report_lookups
 from bizora_core.mobile_supabase_charts import build_monthly_chart_series
 from bizora_core.mobile_supabase_ledger import (
@@ -652,20 +651,6 @@ class MobileSupabaseService:
 
         filters = filters or {}
 
-        if slug == "ledger":
-            try:
-                result = self._run_cloud_ledger(resolved_id, filters)
-                table_payload = build_report_table_payload(result.get("rows", []))
-                result.update(table_payload)
-                return result
-            except Exception as exc:
-                return {
-                    "success": False,
-                    "message": f"Ledger report failed: {exc}",
-                    "rows": [],
-                    "data_source": "supabase",
-                }
-
         if definition.get("handler") == "voucher_book":
             from bizora_core.mobile_supabase_voucher_reports import run_voucher_book_report
 
@@ -677,56 +662,29 @@ class MobileSupabaseService:
                 filters,
             )
 
-        source = get_report_source(slug)
-        if source is None:
-            return {
-                "success": False,
-                "message": UNSUPPORTED_CLOUD_MESSAGE,
-                "rows": [],
-                "data_source": "supabase",
-            }
+        from bizora_core.mobile_supabase_report_handlers import run_cloud_handler_report
 
-        table_name, date_col, filter_mode = source
+        handler_name = definition.get("handler") or ""
+        cloud_result = run_cloud_handler_report(
+            handler_name,
+            slug,
+            self._fetch_table,
+            resolved_id,
+            filters,
+        )
+        if cloud_result is not None:
+            return cloud_result
 
-        try:
-            rows = self._fetch_table(
-                table_name,
-                resolved_id,
-                limit=1000,
-                order_col=date_col,
-            )
-            rows = self._apply_report_filters(
-                slug,
-                rows,
-                filters,
-                date_col,
-                filter_mode,
-                resolved_id,
-            )
-            if not rows:
-                return {
-                    "success": True,
-                    "message": "No records found for the selected filters.",
-                    "rows": [],
-                    "columns": [],
-                    "row_count": 0,
-                    "data_source": "supabase",
-                }
-            table_payload = build_report_table_payload(rows)
-            return {
-                "success": True,
-                "message": "",
-                "data_source": "supabase",
-                **table_payload,
-            }
-        except Exception as exc:
-            message = str(exc)
-            if "Could not find the table" in message:
-                message = (
-                    f"Table '{table_name}' is missing in Supabase. "
-                    "Run: python setup_supabase.py && python sync_bulk_to_supabase.py"
-                )
-            return {"success": False, "message": message, "rows": [], "data_source": "supabase"}
+        return {
+            "success": False,
+            "message": (
+                f"'{definition.get('title', slug)}' is not available in cloud mode yet. "
+                "Run the desktop app with sync, or use local mode: python start_mobile_web.py"
+            ),
+            "rows": [],
+            "columns": [],
+            "data_source": "supabase",
+        }
 
     @staticmethod
     def _empty_metrics_fallback() -> dict[str, float]:

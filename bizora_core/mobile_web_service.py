@@ -205,15 +205,15 @@ class MobileWebService:
             result = handler(resolved_id, definition, filters or {})
             if result.get("success"):
                 rows = result.get("rows") or []
-                if handler_name == "voucher_book":
-                    from bizora_core.report_column_catalog import build_voucher_table_payload
+                from bizora_core.mobile_report_columns import build_slug_table_payload
 
-                    table_payload = build_voucher_table_payload(
-                        rows,
-                        (filters or {}).get("report_mode"),
-                    )
-                else:
-                    table_payload = build_report_table_payload(rows)
+                table_payload = build_slug_table_payload(
+                    slug,
+                    rows,
+                    handler=handler_name,
+                    report_mode=(filters or {}).get("report_mode"),
+                    filters=filters or {},
+                )
                 result.update(table_payload)
             return result
         except Exception as exc:

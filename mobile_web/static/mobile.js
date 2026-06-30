@@ -214,6 +214,27 @@
     return formatFetchError({ message: "Failed to fetch" });
   }
 
+  async function readApiError(response, path) {
+    let detail = "";
+    try {
+      const body = await response.json();
+      if (body && body.detail) {
+        detail = String(body.detail);
+      } else if (body && body.message) {
+        detail = String(body.message);
+      }
+    } catch (error) {
+      detail = "";
+    }
+    if (response.status === 404) {
+      return (
+        detail
+        || `API route not found (${path}). Start the mobile server on this PC: python start_mobile_web.py`
+      );
+    }
+    return detail || `Request failed: ${response.status}`;
+  }
+
   async function apiGet(path) {
     let response;
     try {
@@ -225,7 +246,7 @@
       throw new Error(formatFetchError(error));
     }
     if (!response.ok) {
-      throw new Error(`Request failed: ${response.status}`);
+      throw new Error(await readApiError(response, path));
     }
     return response.json();
   }
@@ -242,7 +263,7 @@
       throw new Error(formatFetchError(error));
     }
     if (!response.ok) {
-      throw new Error(`Request failed: ${response.status}`);
+      throw new Error(await readApiError(response, path));
     }
     return response.json();
   }
@@ -1046,21 +1067,25 @@
           .slice(0, 12)
           .map((key) => ({ key, label: key.replace(/_/g, " ") }));
 
-    const head = `<th class="col-sl">SL</th>${columns
+    const head = columns
       .map((column) => {
         const numClass = isNumericColumn(column.key) ? " num" : "";
         return `<th class="${numClass.trim()}">${column.label || column.key}</th>`;
       })
-      .join("")}`;
+      .join("");
     const body = rows
       .map((row, rowIndex) => {
         const cells = columns
           .map((column) => {
             const numClass = isNumericColumn(column.key) ? " num" : "";
-            return `<td class="${numClass.trim()}">${formatTableCell(column.key, row[column.key])}</td>`;
+            let value = row[column.key];
+            if (column.key === "sl_no" && (value === "" || value == null)) {
+              value = rowIndex + 1;
+            }
+            return `<td class="${numClass.trim()}">${formatTableCell(column.key, value)}</td>`;
           })
           .join("");
-        return `<tr><td class="col-sl">${rowIndex + 1}</td>${cells}</tr>`;
+        return `<tr>${cells}</tr>`;
       })
       .join("");
 
