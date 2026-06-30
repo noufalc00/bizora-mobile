@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
+  <defs>
+    <linearGradient id="head" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#fde047"/><stop offset="100%" stop-color="#ca8a04"/></linearGradient>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#facc15"/><stop offset="100%" stop-color="#a16207"/></linearGradient>
+    <linearGradient id="badge" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#fef08a"/><stop offset="100%" stop-color="#eab308"/></linearGradient>
+  </defs>
+  <ellipse cx="11.5" cy="20.8" rx="6.5" ry="1" fill="#000" opacity="0.2"/>
+  <path d="M5 19.5c0-3.8 3.1-6.9 6.9-6.9s6.9 3.1 6.9 6.9" fill="url(#body)" stroke="#fde047" stroke-width="0.9" stroke-linecap="round"/>
+  <circle cx="11.9" cy="7.2" r="4.2" fill="url(#head)" stroke="#fef9c3" stroke-width="0.9"/>
+  <path d="M8.8 5.8c1.6-1.2 3.6-1.2 5.2 0" stroke="#fffbeb" stroke-width="0.7" opacity="0.7"/>
+  <circle cx="17.2" cy="7.8" r="2.4" fill="url(#badge)" stroke="#fef08a" stroke-width="0.8"/>
+  <path d="M16.2 7.8h2M17.2 6.8v2" stroke="#713f12" stroke-width="0.9" stroke-linecap="round"/>
+</svg>

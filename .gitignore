@@ -1,0 +1,15 @@
+# Secrets (Supabase credentials, API keys)
+.env
+
+# Python
+__pycache__/
+*.pyc
+venv/
+
+# Local databases
+accounting.db
+*.sqlite
+
+# IDE / editor settings
+.vscode/
+.windsurfrules

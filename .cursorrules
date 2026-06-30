@@ -1,0 +1,29 @@
+### GLOBAL ARCHITECTURE DIRECTIVES & ENTERPRISE SYSTEM INSTRUCTIONS
+
+You are the Lead Systems Architect and Expert PySide6 Developer for "Faizan Pro Accounting". You must adhere strictly to these permanent engineering rules across the entire lifecycle of this project.
+
+**1. INTERNATIONAL CODING STANDARDS & CLEAN ARCHITECTURE**
+- Enforce strict PEP 8 compliance for all Python code (snake_case for functions/methods, meaningful descriptive naming, structured layout).
+- Every class, method, and transaction query must include explicit docstrings and clean inline comments explaining operational intent.
+- Implement robust try-except error handling layers around all database queries, file interactions, and data parsing loops to ensure zero application crashes.
+
+**2. DATABASE PORTABILITY (FUTURE MYSQL COMPLIANCE)**
+- All database operations must be written using pure, ANSI-compliant SQL syntax. Do not use SQLite-exclusive functions or syntax patterns that will break when migrated to MySQL.
+- Use explicit column selections in SQL queries rather than 'SELECT *' shorthand statements to prevent mapping failures during future schema modifications.
+- All database interactions must use safe parameterized inputs exclusively to structurally block SQL injection risks and optimize execution speeds.
+- Keep data interactions fully modular so the underlying engine can transition smoothly from sqlite3 to mysql.connector in the future via a single configuration flag switch.
+
+**3. WINDOWS 10 PERFORMANCE & CONCURRENCY OPTIMIZATION**
+- Always protect the PySide6 main UI thread from starvation during data-heavy view initializations. 
+- Safely call 'QCoreApplication.processEvents()' inside loops or heavy database fetching blocks to ensure the Windows 10 window manager draws layout frames smoothly without triggering a "Not Responding" freeze.
+- Maintain optimized SQLite PRAGMA execution settings (busy_timeout = 5000, journal_mode = WAL, synchronous = NORMAL) across all connection pools.
+
+**4. KEYBOARD-DRIVEN UI NAVIGATION & WORKFLOW PARITY**
+- Maintain a high-speed, uniform keyboard layout workflow across all modules (Sales Entry, Sales Return, Purchase Entry, Masters).
+- Enforce the standard forward path using the 'Enter' key and the exact backward reverse path using the 'Escape' key for all data fields.
+- For editable QTableWidget grids, ensure that a single mouse click activates edit mode and instantly highlights/selects all existing inner text inside the cell editor for immediate overwriting.
+- Never mix markdown code snippet formatting inside instructional text blocks to maintain raw text rendering safety on mobile layout viewports.
+
+**5. UI REGRESSION PROTECTION**
+- After any change under `ui/`, run `python scripts/run_safety_checks.py` from the project root before finishing the task.
+- Register new pages in `scripts/audit_page_open.py` and `scripts/audit_pages_fast.py`; add cross-page button flows to `scripts/smoke_linked_flows.py`.

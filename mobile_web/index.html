@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="mobile-api-base" content="">
+  <meta name="theme-color" content="#121212">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>BIZORA Mobile</title>
+  <link rel="stylesheet" href="/static/mobile.css">
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <header class="topbar">
+      <button id="navBackBtn" class="icon-btn hidden" type="button" aria-label="Back">&#8592;</button>
+      <div class="brand-block">
+        <div class="brand-title">BIZORA</div>
+        <div id="pageSubtitle" class="brand-subtitle">Dashboard</div>
+      </div>
+      <button id="themeToggleBtn" class="icon-btn" type="button" aria-label="Toggle color mode">&#9790;</button>
+    </header>
+
+    <nav class="tabbar">
+      <button class="tab-btn active" data-view="dashboard" type="button">Dashboard</button>
+      <button class="tab-btn" data-view="books" type="button">Books</button>
+      <button class="tab-btn" data-view="reports" type="button">Reports</button>
+    </nav>
+
+    <main id="mainContent" class="main-content"></main>
+    <div id="toast" class="toast hidden"></div>
+  </div>
+  <script src="/static/mobile.js"></script>
+</body>
+</html>

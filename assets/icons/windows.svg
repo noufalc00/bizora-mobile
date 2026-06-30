@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
+  <defs>
+    <linearGradient id="back" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#818cf8"/><stop offset="100%" stop-color="#4f46e5"/></linearGradient>
+    <linearGradient id="front" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#a5b4fc"/><stop offset="100%" stop-color="#6366f1"/></linearGradient>
+  </defs>
+  <ellipse cx="12" cy="21" rx="7.5" ry="1" fill="#000" opacity="0.2"/>
+  <rect x="3.2" y="5.2" width="10.8" height="8.8" rx="2" fill="url(#back)" stroke="#c7d2fe" stroke-width="0.9"/>
+  <path d="M4 6.2h9.2" stroke="#e0e7ff" stroke-width="0.7" opacity="0.65"/>
+  <rect x="10.2" y="10.2" width="10.8" height="8.8" rx="2" fill="url(#front)" stroke="#e0e7ff" stroke-width="0.9"/>
+  <path d="M11 11.2h9.2" stroke="#f8fafc" stroke-width="0.7" opacity="0.7"/>
+  <path d="M5.5 8.2h5.8M5.5 10.4h3.8" stroke="#eef2ff" stroke-width="1.1" stroke-linecap="round" opacity="0.85"/>
+  <circle cx="12.8" cy="13.2" r="0.85" fill="#eef2ff"/>
+  <circle cx="15.2" cy="13.2" r="0.85" fill="#eef2ff"/>
+  <circle cx="17.6" cy="13.2" r="0.85" fill="#eef2ff"/>
+</svg>

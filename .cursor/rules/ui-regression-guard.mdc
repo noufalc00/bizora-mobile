@@ -1,0 +1,52 @@
+---
+description: UI regression guard — run safety checks after page/theme fixes
+globs: ui/**/*.py
+alwaysApply: false
+---
+
+# UI Regression Guard
+
+After changing any file under `ui/`, protect working pages from hidden breakage.
+
+## Before finishing a UI task
+
+1. Keep the diff **scoped** to the page or shared helper you intend to change.
+2. Run from project root:
+   ```
+   python scripts/run_safety_checks.py
+   ```
+3. If the change touches popups, exports, or buttons that open other windows, also verify those clicks manually.
+
+Before a release or large merge, run:
+```
+python scripts/run_safety_checks.py --full
+```
+
+## When adding a new page or popup
+
+- Register it in `scripts/audit_page_open.py` (`PAGE_SPECS`).
+- Register it in `scripts/audit_pages_fast.py` (`PAGES`).
+- If another page opens it (e.g. Day Book -> Net Sales Book), add a case to `scripts/smoke_linked_flows.py`.
+
+## Filter bar / top bar pattern
+
+Match working report pages (`audit_log_view.py`, `trial_balance_page.py`, `day_book_page.py`):
+
+- `compact_topbar_frame_style()` on the frame
+- `compact_label_style()` on labels
+- `compact_date_style()` + `setFixedWidth(110)` on date fields
+- `theme.apply_date_edit_calendar_theme(date_edit)` for calendar popups
+- `compact_search_style()` / `compact_combo_style()` on inputs
+
+## Common hidden failures
+
+- Missing imports (`active_company_manager`, `theme`, `Database`) — caught when `refresh()` runs
+- Last column stretch on 2-field date rows — set `setColumnStretch` on a trailing empty column
+- Popup modules lazy-loaded only when a button is clicked — must be in `smoke_linked_flows.py`
+- QCompleter / QComboBox dropdown lists without theme — use `theme.wire_line_edit_completer()`, `theme.wire_editable_combo_completer()`, or `theme.apply_combo_dropdown_theme()`; run `python scripts/audit_completer_theme.py`
+
+## Do not
+
+- Refactor unrelated pages in the same commit as a small UI fix
+- Use symbols without importing them
+- Skip safety checks because "only one file changed"

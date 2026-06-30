@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: bizora-mobile
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile.cloud
+    healthCheckPath: /api/health
+    envVars:
+      - key: MOBILE_DATA_SOURCE
+        value: supabase
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      - key: MOBILE_COMPANY_ID
+        value: "1"

@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Invoice {{ voucher_no }}</title>
+    <style>
+        @page {
+            size: A4;
+            margin: 14mm;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            color: #1f2937;
+            background: #ffffff;
+            font-family: Arial, Helvetica, sans-serif;
+            font-size: 12px;
+            line-height: 1.45;
+        }
+
+        .invoice {
+            width: 100%;
+            min-height: 100%;
+            border: 1px solid #f1c6d7;
+            background: #ffffff;
+        }
+
+        .top-bar {
+            display: flex;
+            justify-content: space-between;
+            gap: 22px;
+            padding: 22px 24px;
+            border-bottom: 1px solid #f1c6d7;
+        }
+
+        .brand {
+            display: flex;
+            gap: 16px;
+            align-items: flex-start;
+            flex: 1;
+        }
+
+        .logo-placeholder {
+            width: 82px;
+            height: 82px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #9f5672;
+            border: 2px dashed #e89bb9;
+            border-radius: 10px;
+            font-size: 11px;
+            text-align: center;
+        }
+
+        .company {
+            flex: 1;
+            text-align: right;
+        }
+
+        .company h1 {
+            margin: 0 0 8px;
+            color: #9f2f5f;
+            font-size: 26px;
+            text-transform: uppercase;
+        }
+
+        .company div,
+        .invoice-meta div,
+        .party-card div {
+            margin-bottom: 4px;
+        }
+
+        .title-strip {
+            padding: 10px 24px;
+            color: #ffffff;
+            background: #e89bb9;
+            font-size: 18px;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-align: center;
+            text-transform: uppercase;
+        }
+
+        .composition-note {
+            margin-top: 3px;
+            font-size: 11px;
+            letter-spacing: 0;
+            text-transform: none;
+        }
+
+        .header-quote {
+            margin: 14px 24px 0;
+            padding: 10px 12px;
+            color: #7f1d4b;
+            background: #fff1f7;
+            border-left: 4px solid #e89bb9;
+            white-space: pre-wrap;
+        }
+
+        .section-grid {
+            display: grid;
+            grid-template-columns: 1.2fr 0.8fr;
+            gap: 16px;
+            padding: 18px 24px;
+        }
+
+        .card {
+            min-height: 112px;
+            border: 1px solid #f1c6d7;
+        }
+
+        .card-title {
+            margin: 0 0 10px;
+            padding: 8px 10px;
+            color: #ffffff;
+            background: #e89bb9;
+            font-size: 12px;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+
+        .card-body {
+            padding: 0 10px 10px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .items {
+            margin: 0 24px;
+            width: calc(100% - 48px);
+            border: 1px solid #f1c6d7;
+        }
+
+        .items th {
+            padding: 9px 7px;
+            color: #ffffff;
+            background: #e89bb9;
+            border: 1px solid #e89bb9;
+            font-size: 11px;
+            text-align: left;
+            text-transform: uppercase;
+        }
+
+        .items td {
+            padding: 8px 7px;
+            border: 1px solid #f7d8e5;
+            vertical-align: top;
+        }
+
+        .center {
+            text-align: center;
+        }
+
+        .right {
+            text-align: right;
+        }
+
+        .amount-words {
+            margin: 14px 24px 0;
+            border: 1px solid #f1c6d7;
+        }
+
+        .amount-words .label {
+            padding: 8px 10px;
+            color: #ffffff;
+            background: #e89bb9;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+
+        .amount-words .value {
+            padding: 10px;
+            font-weight: 700;
+        }
+
+        .summary {
+            display: flex;
+            justify-content: flex-end;
+            padding: 16px 24px;
+        }
+
+        .totals {
+            width: 340px;
+            border: 1px solid #f1c6d7;
+        }
+
+        .totals td {
+            padding: 8px 10px;
+            border-bottom: 1px solid #f7d8e5;
+        }
+
+        .totals tr:last-child td {
+            border-bottom: 0;
+        }
+
+        .grand-total td {
+            color: #ffffff;
+            background: #e89bb9;
+            font-size: 15px;
+            font-weight: 700;
+        }
+
+        .footer {
+            display: flex;
+            justify-content: space-between;
+            gap: 24px;
+            margin: 10px 24px 24px;
+            padding-top: 18px;
+            border-top: 1px solid #f1c6d7;
+        }
+
+        .terms {
+            max-width: 58%;
+            color: #4b5563;
+            white-space: pre-wrap;
+        }
+
+        .signature {
+            min-width: 220px;
+            text-align: center;
+        }
+
+        .signature-line {
+            height: 48px;
+            margin-bottom: 8px;
+            border-bottom: 1px solid #9f5672;
+        }
+    </style>
+</head>
+<body>
+    <main class="invoice">
+        <section class="top-bar">
+            <div class="brand">
+                <div class="logo-placeholder">Logo</div>
+            </div>
+            <div class="company">
+                <h1>{{ company_name }}</h1>
+                <div>{{ company_address }}</div>
+                <div>Phone: {{ company_phone }}</div>
+                <div>GSTIN: {{ company_gstin }}</div>
+            </div>
+        </section>
+
+        <section class="title-strip">
+            {{ invoice_title }}
+            <div class="composition-note">{{ composition_note }}</div>
+        </section>
+
+        {{ header_quote_block }}
+
+        <section class="section-grid">
+            <div class="card party-card">
+                <div class="card-title">Bill To</div>
+                <div class="card-body">
+                    <div><strong>{{ customer_name }}</strong></div>
+                    <div>{{ customer_address }}</div>
+                    <div>Phone: {{ customer_phone }}</div>
+                    <div>GSTIN: {{ customer_gstin }}</div>
+                </div>
+            </div>
+            <div class="card party-card">
+                <div class="card-title">Invoice Details</div>
+                <div class="card-body invoice-meta">
+                    <div><strong>Voucher No:</strong> {{ voucher_no }}</div>
+                    <div><strong>Date:</strong> {{ invoice_date }}</div>
+                    <div><strong>Sale Type:</strong> {{ sales_type }}</div>
+                    <div><strong>Payment:</strong> {{ payment_mode }}</div>
+                </div>
+            </div>
+        </section>
+
+        <table class="items">
+            <thead>
+                <tr>
+                    <th class="center">#</th>
+                    <th>Item</th>
+                    <th>HSN</th>
+                    <th class="right">Qty</th>
+                    <th>Unit</th>
+                    <th class="right">Rate</th>
+                    <th class="right">Taxable</th>
+                    <th class="right">Tax</th>
+                    <th class="right">Total</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{ item_rows }}
+            </tbody>
+        </table>
+
+        <section class="amount-words">
+            <div class="label">Invoice Amount In Words</div>
+            <div class="value">{{ amount_in_words }}</div>
+        </section>
+
+        <section class="summary">
+            <table class="totals">
+                <tr><td>Sub Total</td><td class="right">{{ subtotal }}</td></tr>
+                <tr><td>Discount</td><td class="right">{{ discount_total }}</td></tr>
+                <tr><td>Tax Total</td><td class="right">{{ tax_total }}</td></tr>
+                <tr><td>CGST</td><td class="right">{{ cgst_total }}</td></tr>
+                <tr><td>SGST</td><td class="right">{{ sgst_total }}</td></tr>
+                <tr><td>IGST</td><td class="right">{{ igst_total }}</td></tr>
+                <tr><td>Round Off</td><td class="right">{{ round_off }}</td></tr>
+                <tr class="grand-total"><td>Grand Total</td><td class="right">{{ grand_total }}</td></tr>
+                <tr><td>Received</td><td class="right">{{ amount_received }}</td></tr>
+                <tr><td>Balance</td><td class="right">{{ balance }}</td></tr>
+            </table>
+        </section>
+
+        <section class="footer">
+            {{ footer_terms_block }}
+            <div class="signature">
+                <div class="signature-line"></div>
+                Authorized Signatory
+            </div>
+        </section>
+    </main>
+</body>
+</html>

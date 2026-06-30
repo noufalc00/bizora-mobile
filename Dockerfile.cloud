@@ -1,0 +1,22 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV MOBILE_DATA_SOURCE=supabase
+
+COPY requirements-cloud.txt .
+RUN pip install --no-cache-dir -r requirements-cloud.txt
+
+COPY config.py .
+COPY mobile_api.py .
+COPY start_cloud_mobile.py .
+COPY sync_service.py .
+COPY utils ./utils
+COPY bizora_core ./bizora_core
+COPY mobile_web ./mobile_web
+
+EXPOSE 8080
+
+CMD ["python", "start_cloud_mobile.py"]
