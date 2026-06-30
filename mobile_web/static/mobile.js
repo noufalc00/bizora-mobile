@@ -2,7 +2,9 @@
   "use strict";
 
   const THEME_KEY = "bizora_mobile_theme";
+  const SESSION_KEY = "bizora_mobile_session";
   const FETCH_TIMEOUT_MS = 60000;
+  const LOGO_LONG_PRESS_MS = 800;
 
   const storage = {
     get(key, fallback) {
@@ -45,14 +47,71 @@
     theme: storage.get(THEME_KEY, "dark"),
     colors: {},
     currency: "₹",
-    view: "dashboard",
+    view: "login",
     reportSlug: null,
     reportTitle: "",
     navigation: null,
     dashboard: null,
+    session: null,
+    selectedCompany: null,
+    isSecretSession: false,
+    companyModalVisibility: "normal",
   };
 
+  function loadSession() {
+    try {
+      const raw = storage.get(SESSION_KEY, "");
+      if (!raw) {
+        return null;
+      }
+      const parsed = JSON.parse(raw);
+      if (parsed && parsed.company_id) {
+        return parsed;
+      }
+    } catch (error) {
+      return null;
+    }
+    return null;
+  }
+
+  function saveSession(session) {
+    state.session = session;
+    storage.set(SESSION_KEY, JSON.stringify(session || {}));
+  }
+
+  function clearSession() {
+    state.session = null;
+    storage.set(SESSION_KEY, "");
+  }
+
+  function apiHeaders(extraHeaders) {
+    const headers = Object.assign({}, extraHeaders || {});
+    if (state.session && state.session.company_id) {
+      headers["X-Bizora-Company-Id"] = String(state.session.company_id);
+    }
+    return headers;
+  }
+
   const el = {
+    loginScreen: document.getElementById("loginScreen"),
+    appShell: document.getElementById("app"),
+    fileMenuBtn: document.getElementById("fileMenuBtn"),
+    fileMenuPanel: document.getElementById("fileMenuPanel"),
+    openCompaniesBtn: document.getElementById("openCompaniesBtn"),
+    loginLogoBox: document.getElementById("loginLogoBox"),
+    secretFileBtn: document.getElementById("secretFileBtn"),
+    loginCompanyName: document.getElementById("loginCompanyName"),
+    loginCompanyHint: document.getElementById("loginCompanyHint"),
+    loginForm: document.getElementById("loginForm"),
+    loginUsername: document.getElementById("loginUsername"),
+    loginPassword: document.getElementById("loginPassword"),
+    loginDate: document.getElementById("loginDate"),
+    loginSubmitBtn: document.getElementById("loginSubmitBtn"),
+    companyModal: document.getElementById("companyModal"),
+    companyModalTitle: document.getElementById("companyModalTitle"),
+    companyModalList: document.getElementById("companyModalList"),
+    companyModalClose: document.getElementById("companyModalClose"),
+    logoutBtn: document.getElementById("logoutBtn"),
     main: document.getElementById("mainContent"),
     subtitle: document.getElementById("pageSubtitle"),
     backBtn: document.getElementById("navBackBtn"),
@@ -151,7 +210,10 @@
   async function apiGet(path) {
     let response;
     try {
-      response = await fetchWithTimeout(apiPath(path), { cache: "no-store" });
+      response = await fetchWithTimeout(apiPath(path), {
+        cache: "no-store",
+        headers: apiHeaders(),
+      });
     } catch (error) {
       throw new Error(formatFetchError(error));
     }
@@ -166,7 +228,7 @@
     try {
       response = await fetchWithTimeout(apiPath(path), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: apiHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify(body),
       });
     } catch (error) {
@@ -239,6 +301,218 @@
         <div class="chart-bars">${bars || '<div class="empty-state">No chart data</div>'}</div>
       </section>
     `;
+  }
+
+  function todayIsoDate() {
+    return new Date().toISOString().slice(0, 10);
+  }
+
+  function showLoginScreen() {
+    state.view = "login";
+    el.loginScreen.classList.remove("hidden");
+    el.appShell.classList.add("hidden");
+    el.fileMenuPanel.classList.add("hidden");
+    hideSecretFileButton();
+  }
+
+  function showAppShell() {
+    el.loginScreen.classList.add("hidden");
+    el.appShell.classList.remove("hidden");
+  }
+
+  function hideSecretFileButton() {
+    el.secretFileBtn.classList.add("hidden");
+  }
+
+  function revealSecretFileButton() {
+    el.secretFileBtn.classList.remove("hidden");
+    showToast("Secret file unlocked");
+  }
+
+  function refreshLoginCompanyDisplay() {
+    const company = state.selectedCompany;
+    if (!company) {
+      el.loginCompanyName.textContent = "No active company selected";
+      el.loginCompanyHint.textContent = "Use File > Open Companies to select a company.";
+      el.loginSubmitBtn.disabled = true;
+      return;
+    }
+    const gstin = company.gstin || "No GSTIN";
+    const companyState = company.state || "State not set";
+    el.loginCompanyName.textContent = company.business_name || "Selected company";
+    el.loginCompanyHint.textContent = `${gstin} | ${companyState}`;
+    el.loginSubmitBtn.disabled = false;
+  }
+
+  function populateUsernameOptions(usernames) {
+    const options = (usernames && usernames.length ? usernames : ["admin"])
+      .map((name) => `<option value="${name}">${name}</option>`)
+      .join("");
+    el.loginUsername.innerHTML = options;
+  }
+
+  async function loadLoginBootstrap() {
+    const payload = await apiGet("/api/auth/bootstrap");
+    if (payload.company) {
+      state.selectedCompany = payload.company;
+      state.isSecretSession = false;
+    } else {
+      state.selectedCompany = null;
+      state.isSecretSession = false;
+    }
+    populateUsernameOptions(payload.usernames || []);
+    refreshLoginCompanyDisplay();
+  }
+
+  async function loadCompanyUsers(companyId) {
+    try {
+      const payload = await apiGet(`/api/companies/${companyId}/users`);
+      populateUsernameOptions(payload.usernames || []);
+    } catch (error) {
+      populateUsernameOptions(["admin"]);
+    }
+  }
+
+  function closeCompanyModal() {
+    el.companyModal.classList.add("hidden");
+  }
+
+  async function openCompanyModal(visibility) {
+    state.companyModalVisibility = visibility || "normal";
+    el.companyModalTitle.textContent = visibility === "secret"
+      ? "Open Secret Companies"
+      : "Open Companies";
+    el.companyModal.classList.remove("hidden");
+    el.companyModalList.innerHTML = '<div class="empty-state">Loading companies...</div>';
+    try {
+      const payload = await apiGet(`/api/companies?visibility=${encodeURIComponent(state.companyModalVisibility)}`);
+      const companies = payload.companies || [];
+      if (!companies.length) {
+        const emptyText = state.companyModalVisibility === "secret"
+          ? "No secret companies found."
+          : "No companies found.";
+        el.companyModalList.innerHTML = `<div class="empty-state">${emptyText}</div>`;
+        return;
+      }
+      el.companyModalList.innerHTML = companies.map((company) => `
+        <button class="company-item" type="button" data-company-id="${company.id}">
+          <div class="company-item-name">${company.business_name || "Unnamed company"}</div>
+          <div class="company-item-meta">${company.gstin || "No GSTIN"} | ${company.state || "State not set"}</div>
+        </button>
+      `).join("");
+      el.companyModalList.querySelectorAll(".company-item").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const companyId = Number(button.dataset.companyId);
+          const selected = companies.find((row) => Number(row.id) === companyId);
+          if (!selected) {
+            return;
+          }
+          state.selectedCompany = selected;
+          state.isSecretSession = state.companyModalVisibility === "secret";
+          el.loginPassword.value = "";
+          await loadCompanyUsers(companyId);
+          refreshLoginCompanyDisplay();
+          closeCompanyModal();
+          showToast(`${selected.business_name || "Company"} selected`);
+        });
+      });
+    } catch (error) {
+      el.companyModalList.innerHTML = `<div class="error-state">${formatFetchError(error)}</div>`;
+    }
+  }
+
+  async function submitLogin(event) {
+    event.preventDefault();
+    if (!state.selectedCompany || !state.selectedCompany.id) {
+      showToast("Select a company first");
+      return;
+    }
+    el.loginSubmitBtn.disabled = true;
+    el.loginSubmitBtn.textContent = "Logging in...";
+    try {
+      const payload = await apiPost("/api/auth/login", {
+        company_id: Number(state.selectedCompany.id),
+        username: el.loginUsername.value,
+        password: el.loginPassword.value,
+        is_secret: state.isSecretSession,
+      });
+      if (!payload.success) {
+        showToast(payload.message || "Login failed");
+        return;
+      }
+      saveSession(payload.session || null);
+      state.navigation = null;
+      showAppShell();
+      await renderDashboard();
+      showToast(`Welcome, ${payload.session.username}`);
+    } catch (error) {
+      showToast(formatFetchError(error));
+    } finally {
+      el.loginSubmitBtn.disabled = !state.selectedCompany;
+      el.loginSubmitBtn.textContent = "Login";
+    }
+  }
+
+  function logoutToLogin() {
+    clearSession();
+    state.navigation = null;
+    state.dashboard = null;
+    state.selectedCompany = null;
+    state.isSecretSession = false;
+    el.loginPassword.value = "";
+    hideSecretFileButton();
+    showLoginScreen();
+    loadLoginBootstrap().catch((error) => {
+      showToast(formatFetchError(error));
+    });
+  }
+
+  function installLogoLongPress() {
+    let pressTimer = null;
+    let lastTap = 0;
+
+    const clearPress = () => {
+      if (pressTimer) {
+        window.clearTimeout(pressTimer);
+        pressTimer = null;
+      }
+    };
+
+    const startPress = () => {
+      clearPress();
+      pressTimer = window.setTimeout(() => {
+        revealSecretFileButton();
+      }, LOGO_LONG_PRESS_MS);
+    };
+
+    el.loginLogoBox.addEventListener("touchstart", (event) => {
+      event.preventDefault();
+      startPress();
+    }, { passive: false });
+    el.loginLogoBox.addEventListener("touchend", clearPress);
+    el.loginLogoBox.addEventListener("touchmove", clearPress);
+    el.loginLogoBox.addEventListener("touchcancel", clearPress);
+    el.loginLogoBox.addEventListener("mousedown", startPress);
+    el.loginLogoBox.addEventListener("mouseup", clearPress);
+    el.loginLogoBox.addEventListener("mouseleave", clearPress);
+
+    el.loginLogoBox.addEventListener("click", () => {
+      const now = Date.now();
+      if (now - lastTap < 350 && !el.secretFileBtn.classList.contains("hidden")) {
+        hideSecretFileButton();
+      }
+      lastTap = now;
+    });
+  }
+
+  async function renderLoginScreen() {
+    showLoginScreen();
+    el.loginDate.value = todayIsoDate();
+    try {
+      await loadLoginBootstrap();
+    } catch (error) {
+      showToast(formatFetchError(error));
+    }
   }
 
   async function renderDashboard() {
@@ -352,9 +626,76 @@
     return "";
   }
 
-  function buildFilterField(filter, lookups) {
+  function resolveLedgerSearchOptions(lookups, ledgerView) {
+    const view = ledgerView || "General";
+    if (view === "Debtors") {
+      return lookups.ledger_debtors || [];
+    }
+    if (view === "Creditors") {
+      return lookups.ledger_creditors || [];
+    }
+    if (view === "Cash/Bank") {
+      return lookups.ledger_cash_bank || [];
+    }
+    return lookups.ledger_general || [];
+  }
+
+  function buildLookupSelect(filter, options, labelKey, emptyLabel) {
     const fieldId = `filter-${filter.key}`;
-  if (filter.type === "select") {
+    const optionRows = (options || [])
+      .map((option) => {
+        const label = typeof option === "string" ? option : option[labelKey];
+        const value = typeof option === "string" ? option : (option.value != null ? option.value : label);
+        if (!label) {
+          return "";
+        }
+        return `<option value="${value}">${label}</option>`;
+      })
+      .join("");
+    return `
+      <div class="field" data-filter-key="${filter.key}">
+        <label for="${fieldId}">${filter.label}</label>
+        <select id="${fieldId}" data-key="${filter.key}">
+          <option value="">${emptyLabel}</option>
+          ${optionRows}
+        </select>
+      </div>
+    `;
+  }
+
+  function buildFilterField(filter, lookups, slug) {
+    const fieldId = `filter-${filter.key}`;
+    if (filter.key === "party" && (lookups.parties || []).length) {
+      return buildLookupSelect(filter, lookups.parties, "name", "All Parties");
+    }
+    if (filter.key === "product" && (lookups.products || []).length) {
+      return buildLookupSelect(filter, lookups.products, "name", "All Products");
+    }
+    if (filter.key === "category" && (lookups.categories || []).length) {
+      return buildLookupSelect(
+        filter,
+        lookups.categories.map((name) => ({ name })),
+        "name",
+        "All Categories",
+      );
+    }
+    if (filter.key === "gst" && (lookups.gst_options || []).length) {
+      return buildLookupSelect(filter, lookups.gst_options, "label", "All GST");
+    }
+    if (slug === "ledger" && filter.key === "search") {
+      const ledgerView = (document.getElementById("filter-ledger_view") || {}).value || "General";
+      const options = resolveLedgerSearchOptions(lookups, ledgerView);
+      return buildLookupSelect(filter, options, "name", "All Accounts");
+    }
+    if (slug === "purchase-order-book" && filter.key === "search" && (lookups.creditors_po || []).length) {
+      return buildLookupSelect(
+        filter,
+        lookups.creditors_po.map((name) => ({ name })),
+        "name",
+        "All Creditors",
+      );
+    }
+    if (filter.type === "select") {
       const options = (filter.options || [])
         .map((option) => `<option value="${option}">${option}</option>`)
         .join("");
@@ -391,11 +732,47 @@
     }
     const inputType = filter.type === "number" ? "number" : filter.type === "date" ? "date" : "text";
     return `
-      <div class="field">
+      <div class="field" data-filter-key="${filter.key}">
         <label for="${fieldId}">${filter.label}</label>
         <input id="${fieldId}" data-key="${filter.key}" type="${inputType}" value="${defaultValueForFilter(filter)}">
       </div>
     `;
+  }
+
+  function replaceLedgerSearchField(formRoot, lookups) {
+    const ledgerViewInput = formRoot.querySelector('[data-key="ledger_view"]');
+    const ledgerView = ledgerViewInput ? ledgerViewInput.value : "General";
+    const searchField = formRoot.querySelector('[data-filter-key="search"]');
+    if (!searchField) {
+      return;
+    }
+    const previousValue = (searchField.querySelector("[data-key]") || {}).value || "";
+    const searchFilter = { key: "search", label: "Search", type: "text", required: false };
+    const replacement = document.createElement("div");
+    replacement.innerHTML = buildFilterField(searchFilter, lookups, "ledger");
+    const newField = replacement.firstElementChild;
+    if (!newField) {
+      return;
+    }
+    searchField.replaceWith(newField);
+    const select = newField.querySelector("[data-key]");
+    if (select && previousValue) {
+      select.value = previousValue;
+    }
+  }
+
+  function wireDynamicFilters(slug, lookups) {
+    const formRoot = document.getElementById("reportForm");
+    if (!formRoot || slug !== "ledger") {
+      return;
+    }
+    const ledgerViewInput = formRoot.querySelector('[data-key="ledger_view"]');
+    if (!ledgerViewInput) {
+      return;
+    }
+    const refresh = () => replaceLedgerSearchField(formRoot, lookups);
+    ledgerViewInput.addEventListener("change", refresh);
+    refresh();
   }
 
   function collectFilters(formRoot) {
@@ -472,7 +849,7 @@
       const meta = await apiGet(`/api/reports/${slug}/meta`);
       const route = meta.route || {};
       const filters = route.filters || [];
-      const fields = filters.map((filter) => buildFilterField(filter, meta.lookups || {})).join("");
+      const fields = filters.map((filter) => buildFilterField(filter, meta.lookups || {}, slug)).join("");
       el.main.innerHTML = `
         <section class="panel">
           <div class="panel-title">${route.title || title}</div>
@@ -481,6 +858,7 @@
           <div id="reportResult"></div>
         </section>
       `;
+      wireDynamicFilters(slug, meta.lookups || {});
       document.getElementById("runReportBtn").addEventListener("click", () => runReport(slug));
     } catch (error) {
       el.main.innerHTML = `<div class="error-state">${formatFetchError(error)}</div>`;
@@ -488,6 +866,32 @@
   }
 
   function bindEvents() {
+    installLogoLongPress();
+
+    el.fileMenuBtn.addEventListener("click", () => {
+      el.fileMenuPanel.classList.toggle("hidden");
+    });
+
+    el.openCompaniesBtn.addEventListener("click", () => {
+      el.fileMenuPanel.classList.add("hidden");
+      openCompanyModal("normal");
+    });
+
+    el.secretFileBtn.addEventListener("click", () => {
+      openCompanyModal("secret");
+    });
+
+    el.companyModalClose.addEventListener("click", closeCompanyModal);
+    el.companyModal.addEventListener("click", (event) => {
+      if (event.target === el.companyModal) {
+        closeCompanyModal();
+      }
+    });
+
+    el.loginForm.addEventListener("submit", submitLogin);
+
+    el.logoutBtn.addEventListener("click", logoutToLogin);
+
     el.tabs.forEach((button) => {
       button.addEventListener("click", () => {
         const view = button.dataset.view;
@@ -526,14 +930,21 @@
 
   async function boot() {
     bindEvents();
+    state.session = loadSession();
     const stopLoading = startLoadingProgress("Connecting...");
     try {
       await loadTheme();
       stopLoading();
-      await renderDashboard();
+      if (state.session && state.session.company_id) {
+        showAppShell();
+        await renderDashboard();
+        return;
+      }
+      await renderLoginScreen();
     } catch (error) {
       stopLoading();
-      el.main.innerHTML = `<div class="error-state">${formatFetchError(error)}</div>`;
+      showLoginScreen();
+      el.loginCompanyHint.textContent = formatFetchError(error);
     }
   }
 

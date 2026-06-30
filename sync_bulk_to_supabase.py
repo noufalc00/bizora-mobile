@@ -75,6 +75,38 @@ SYNC_PLAN: tuple[tuple[str, str, str], ...] = (
         "SELECT * FROM ledger_entries WHERE company_id IN ({company_ids})",
         "id",
     ),
+    (
+        "quotations",
+        "SELECT * FROM quotations WHERE company_id IN ({company_ids})",
+        "company_id,quotation_no",
+    ),
+    (
+        "quotation_items",
+        "SELECT qi.* FROM quotation_items qi INNER JOIN quotations q ON q.id = qi.quotation_id "
+        "WHERE q.company_id IN ({company_ids})",
+        "id",
+    ),
+    (
+        "purchase_orders",
+        "SELECT * FROM purchase_orders WHERE company_id IN ({company_ids})",
+        "company_id,po_number",
+    ),
+    (
+        "purchase_order_items",
+        "SELECT poi.* FROM purchase_order_items poi INNER JOIN purchase_orders po ON po.id = poi.po_id "
+        "WHERE po.company_id IN ({company_ids})",
+        "id",
+    ),
+    (
+        "pdc_register",
+        "SELECT * FROM pdc_register WHERE company_id IN ({company_ids})",
+        "id",
+    ),
+    (
+        "stock_movements",
+        "SELECT * FROM stock_movements WHERE company_id IN ({company_ids})",
+        "id",
+    ),
 )
 
 

@@ -7,16 +7,57 @@
   <meta name="theme-color" content="#121212">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <title>BIZORA Mobile</title>
-  <link rel="stylesheet" href="/static/mobile.css?v=1.3">
+  <link rel="stylesheet" href="/static/mobile.css?v=1.5">
 </head>
 <body>
-  <div id="app" class="app-shell">
+  <div id="loginScreen" class="login-screen">
+    <header class="login-menu-row">
+      <div class="file-menu-wrap">
+        <button id="fileMenuBtn" class="file-menu-btn" type="button">File</button>
+        <div id="fileMenuPanel" class="file-menu-panel hidden">
+          <button id="openCompaniesBtn" class="file-menu-item" type="button">Open Companies</button>
+        </div>
+      </div>
+    </header>
+    <div class="login-body">
+      <section class="login-card">
+        <div class="login-logo-row">
+          <div id="loginLogoBox" class="login-logo-box" aria-label="Brand logo">
+            <img src="/static/app_logo.png" alt="BIZORA" class="login-logo-image">
+          </div>
+          <button id="secretFileBtn" class="secret-file-btn hidden" type="button" aria-label="Secret companies">
+            <img src="/static/file.svg" alt="" class="secret-file-icon">
+          </button>
+        </div>
+        <div id="loginCompanyName" class="login-company-name">No active company selected</div>
+        <div id="loginCompanyHint" class="login-company-hint">Use File &gt; Open Companies to select a company.</div>
+        <form id="loginForm" class="login-form" autocomplete="off">
+          <div class="field">
+            <label for="loginUsername">Username</label>
+            <select id="loginUsername" required></select>
+          </div>
+          <div class="field">
+            <label for="loginPassword">Password</label>
+            <input id="loginPassword" type="password" placeholder="Password" required>
+          </div>
+          <div class="field">
+            <label for="loginDate">Date</label>
+            <input id="loginDate" type="date" required>
+          </div>
+          <button id="loginSubmitBtn" class="login-submit-btn" type="submit" disabled>Login</button>
+        </form>
+      </section>
+    </div>
+  </div>
+
+  <div id="app" class="app-shell hidden">
     <header class="topbar">
       <button id="navBackBtn" class="icon-btn hidden" type="button" aria-label="Back">&#8592;</button>
       <div class="brand-block">
-        <div class="brand-title">BIZORA</div>
+        <img src="/static/app_logo.png" alt="BIZORA" class="brand-logo">
         <div id="pageSubtitle" class="brand-subtitle">Dashboard</div>
       </div>
+      <button id="logoutBtn" class="icon-btn" type="button" aria-label="Log out">&#9099;</button>
       <button id="themeToggleBtn" class="icon-btn" type="button" aria-label="Toggle color mode">&#9790;</button>
     </header>
 
@@ -29,6 +70,17 @@
     <main id="mainContent" class="main-content"></main>
     <div id="toast" class="toast hidden"></div>
   </div>
-  <script src="/static/mobile.js?v=1.3"></script>
+
+  <div id="companyModal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div id="companyModalTitle" class="modal-title">Open Companies</div>
+        <button id="companyModalClose" class="icon-btn" type="button" aria-label="Close">&#10005;</button>
+      </div>
+      <div id="companyModalList" class="company-list"></div>
+    </div>
+  </div>
+
+  <script src="/static/mobile.js?v=1.5"></script>
 </body>
 </html>

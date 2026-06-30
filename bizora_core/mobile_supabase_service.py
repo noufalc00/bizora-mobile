@@ -9,6 +9,12 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Optional
 
+from bizora_core.mobile_report_lookups import build_supabase_report_lookups
+from bizora_core.mobile_supabase_charts import build_monthly_chart_series
+from bizora_core.mobile_supabase_ledger import (
+    build_account_summary,
+    filter_accounts_for_view,
+)
 from bizora_core.mobile_supabase_metrics import (
     calculate_day_credit_sales,
     calculate_net_realized_sale,
@@ -22,6 +28,7 @@ from bizora_core.mobile_web_registry import build_navigation_payload, get_route_
 from config import CURRENCY_SYMBOL
 from sync_service import get_supabase_client
 from utils.color_tokens import build_theme_payload
+from utils.date_display import format_display_date
 
 
 class MobileSupabaseService:
@@ -35,8 +42,10 @@ class MobileSupabaseService:
             )
         return client
 
-    def resolve_company_id(self) -> Optional[int]:
+    def resolve_company_id(self, override_id: Optional[int] = None) -> Optional[int]:
         """Resolve the company used for cloud mobile views."""
+        if override_id:
+            return int(override_id)
         import os
 
         forced = (os.getenv("MOBILE_COMPANY_ID") or "").strip()
@@ -60,6 +69,123 @@ class MobileSupabaseService:
         except Exception as exc:
             print(f"[MOBILE-SUPABASE] Company resolve failed: {exc}")
         return None
+
+    def list_companies(self, visibility: Optional[str] = None) -> dict[str, Any]:
+        """List synced companies available for cloud mobile login."""
+        try:
+            response = (
+                self._client()
+                .table("companies")
+                .select(
+                    "id,business_name,gstin,phone_number,email,state,is_active,visibility"
+                )
+                .order("id")
+                .limit(50)
+                .execute()
+            )
+            rows = response.data or []
+            if visibility:
+                pool = visibility.strip().lower()
+                rows = [
+                    row for row in rows
+                    if str(row.get("visibility") or "normal").strip().lower() == pool
+                ]
+            companies = [
+                {
+                    "id": row.get("id"),
+                    "business_name": row.get("business_name") or "",
+                    "gstin": row.get("gstin") or "",
+                    "phone_number": row.get("phone_number") or "",
+                    "email": row.get("email") or "",
+                    "state": row.get("state") or "",
+                    "is_active": bool(row.get("is_active")),
+                    "visibility": str(row.get("visibility") or "normal").strip().lower(),
+                }
+                for row in rows
+            ]
+            return {"success": True, "companies": companies}
+        except Exception as exc:
+            return {"success": False, "message": str(exc), "companies": []}
+
+    def get_bootstrap(self) -> dict[str, Any]:
+        """Return the active normal company for the cloud login screen."""
+        try:
+            response = (
+                self._client()
+                .table("companies")
+                .select(
+                    "id,business_name,gstin,phone_number,email,state,is_active,visibility"
+                )
+                .eq("is_active", True)
+                .limit(5)
+                .execute()
+            )
+            rows = response.data or []
+            normal_rows = [
+                row for row in rows
+                if str(row.get("visibility") or "normal").strip().lower() == "normal"
+            ]
+            chosen = normal_rows[0] if normal_rows else (rows[0] if rows else None)
+            company = None
+            if chosen:
+                company = {
+                    "id": chosen.get("id"),
+                    "business_name": chosen.get("business_name") or "",
+                    "gstin": chosen.get("gstin") or "",
+                    "phone_number": chosen.get("phone_number") or "",
+                    "email": chosen.get("email") or "",
+                    "state": chosen.get("state") or "",
+                    "is_active": bool(chosen.get("is_active")),
+                    "visibility": str(chosen.get("visibility") or "normal").strip().lower(),
+                }
+            return {
+                "success": True,
+                "company": company,
+                "usernames": ["admin"],
+            }
+        except Exception as exc:
+            return {"success": False, "message": str(exc), "company": None, "usernames": []}
+
+    def cloud_login(self, company_id: int, username: str, *, is_secret: bool = False) -> dict[str, Any]:
+        """Open a synced company for read-only cloud mobile access."""
+        try:
+            response = (
+                self._client()
+                .table("companies")
+                .select(
+                    "id,business_name,gstin,phone_number,email,state,is_active,visibility"
+                )
+                .eq("id", company_id)
+                .limit(1)
+                .execute()
+            )
+            rows = response.data or []
+            if not rows:
+                return {"success": False, "message": "Company not found in Supabase."}
+            company = rows[0]
+            return {
+                "success": True,
+                "message": "",
+                "session": {
+                    "company_id": int(company.get("id") or company_id),
+                    "company_name": company.get("business_name") or "",
+                    "username": str(username or "admin").strip() or "admin",
+                    "role": "Admin",
+                    "is_secret": bool(is_secret),
+                },
+                "company": {
+                    "id": company.get("id"),
+                    "business_name": company.get("business_name") or "",
+                    "gstin": company.get("gstin") or "",
+                    "phone_number": company.get("phone_number") or "",
+                    "email": company.get("email") or "",
+                    "state": company.get("state") or "",
+                    "is_active": bool(company.get("is_active")),
+                    "visibility": str(company.get("visibility") or "normal").strip().lower(),
+                },
+            }
+        except Exception as exc:
+            return {"success": False, "message": str(exc)}
 
     def _fetch_table(
         self,
@@ -103,7 +229,7 @@ class MobileSupabaseService:
 
     def get_dashboard_payload(self, company_id: Optional[int] = None) -> dict[str, Any]:
         """Build a dashboard snapshot from synced Supabase business tables."""
-        resolved_id = company_id or self.resolve_company_id()
+        resolved_id = self.resolve_company_id(company_id)
         if not resolved_id:
             return {
                 "success": False,
@@ -129,14 +255,14 @@ class MobileSupabaseService:
                 "sales",
                 resolved_id,
                 select="company_id,invoice_number,invoice_date,grand_total,sales_type,payment_mode,status",
-                limit=500,
+                limit=2000,
                 order_col="invoice_date",
             )
             purchases_rows = self._fetch_table(
                 "purchases",
                 resolved_id,
                 select="company_id,purchase_number,purchase_date,grand_total,status",
-                limit=300,
+                limit=2000,
                 order_col="purchase_date",
             )
             sales_return_rows = self._fetch_table(
@@ -190,16 +316,26 @@ class MobileSupabaseService:
             }
 
             for row in sales_rows[:5]:
+                invoice_date = format_display_date(row.get("invoice_date", ""))
                 recent_activity.append(
-                    f"Sale {row.get('invoice_number', '')} — ₹{float(row.get('grand_total') or 0):,.2f} ({row.get('invoice_date', '')})"
+                    f"Sale {row.get('invoice_number', '')} — ₹{float(row.get('grand_total') or 0):,.2f} ({invoice_date})"
                 )
             for row in purchases_rows[:3]:
+                purchase_date = format_display_date(row.get("purchase_date", ""))
                 recent_activity.append(
-                    f"Purchase {row.get('purchase_number', '')} — ₹{float(row.get('grand_total') or 0):,.2f} ({row.get('purchase_date', '')})"
+                    f"Purchase {row.get('purchase_number', '')} — ₹{float(row.get('grand_total') or 0):,.2f} ({purchase_date})"
                 )
 
-            sales_chart = self._monthly_totals(sales_rows, "invoice_date", "grand_total")
-            purchase_chart = self._monthly_totals(purchases_rows, "purchase_date", "grand_total")
+            sales_chart = build_monthly_chart_series(
+                sales_rows,
+                date_column="invoice_date",
+                amount_column="grand_total",
+            )
+            purchase_chart = build_monthly_chart_series(
+                purchases_rows,
+                date_column="purchase_date",
+                amount_column="grand_total",
+            )
         except Exception as exc:
             return {
                 "success": False,
@@ -241,52 +377,68 @@ class MobileSupabaseService:
             "data_source": "supabase",
         }
 
-    @staticmethod
-    def _monthly_totals(rows: list[dict[str, Any]], date_key: str, amount_key: str) -> list[dict[str, Any]]:
-        """Aggregate rows into the last six month buckets for mobile charts."""
-        buckets: dict[str, float] = {}
-        for row in rows:
-            month = str(row.get(date_key) or "")[:7]
-            if not month:
-                continue
-            buckets[month] = buckets.get(month, 0.0) + float(row.get(amount_key) or 0.0)
-        labels = sorted(buckets.keys())[-6:]
-        return [{"label": label, "total": round(buckets[label], 2)} for label in labels]
-
-    def get_report_meta(self, slug: str) -> dict[str, Any]:
+    def get_report_meta(self, slug: str, company_id: Optional[int] = None) -> dict[str, Any]:
         """Return report filter metadata."""
         definition = get_route_definition(slug)
         if definition is None:
             return {"success": False, "message": f"Unknown route: {slug}"}
 
+        resolved_id = self.resolve_company_id(company_id)
         lookups: dict[str, Any] = {}
-        company_id = self.resolve_company_id()
-        if company_id and slug == "ledger-statement":
+        if resolved_id:
             try:
-                accounts = self._fetch_table(
-                    "ledger_accounts",
-                    company_id,
-                    select="id,account_name,account_type,group_name",
-                    limit=300,
-                )
-                lookups["accounts"] = [
-                    {
-                        "id": row.get("id"),
-                        "account_name": row.get("account_name"),
-                    }
-                    for row in accounts
-                    if row.get("id") is not None
-                ]
+                lookups = build_supabase_report_lookups(self._fetch_table, resolved_id, slug)
             except Exception as exc:
-                print(f"[MOBILE-SUPABASE] Account lookup failed: {exc}")
+                print(f"[MOBILE-SUPABASE] Lookup build failed: {exc}")
 
         return {
             "success": True,
             "route": definition,
             "lookups": lookups,
-            "company_id": company_id,
+            "company_id": resolved_id,
             "data_source": "supabase",
         }
+
+    @staticmethod
+    def _movement_row_date(row: dict[str, Any]) -> str:
+        """Return ISO date for a stock movement row."""
+        return str(row.get("movement_date") or row.get("created_at") or "")[:10]
+
+    def _run_cloud_ledger(self, company_id: int, filters: dict[str, Any]) -> dict[str, Any]:
+        """Run ledger summary views from synced accounts and entries."""
+        from_date = date.fromisoformat(str(filters.get("from_date") or date.today())[:10])
+        to_date = date.fromisoformat(str(filters.get("to_date") or date.today())[:10])
+        view = str(filters.get("ledger_view") or "General")
+
+        ledger_accounts = self._fetch_table(
+            "ledger_accounts",
+            company_id,
+            select="id,company_id,account_name,account_type,group_name,opening_balance,opening_balance_type,is_active",
+            limit=1000,
+        )
+        parties = self._fetch_table(
+            "parties",
+            company_id,
+            select="id,party_type,name",
+            limit=1000,
+        )
+        entries = self._fetch_table(
+            "ledger_entries",
+            company_id,
+            select="company_id,account_id,voucher_type,voucher_date,debit,credit",
+            limit=10000,
+            order_col="voucher_date",
+        )
+        accounts = filter_accounts_for_view(ledger_accounts, parties, view)
+        rows = build_account_summary(accounts, entries, company_id, from_date, to_date)
+
+        search = str(filters.get("search") or "").strip().lower()
+        if search:
+            rows = [
+                row for row in rows
+                if search in str(row.get("account_name", "")).lower()
+            ]
+        return {"success": True, "message": "", "rows": rows, "data_source": "supabase"}
 
     def _apply_report_filters(
         self,
@@ -328,31 +480,162 @@ class MobileSupabaseService:
                 if "journal" in str(row.get("voucher_type") or "").lower()
             ]
 
-        if date_col:
-            if from_date:
-                rows = [row for row in rows if str(row.get(date_col) or "")[:10] >= from_date]
-            if to_date:
-                rows = [row for row in rows if str(row.get(date_col) or "")[:10] <= to_date]
-
-        if search:
-            rows = [row for row in rows if search in str(row).lower()]
-
-        if slug in {"sales-book", "gst-sales-report", "bill-history"}:
+        if filter_mode == "pdc":
+            transaction_type = str(filters.get("transaction_type") or "All")
+            if transaction_type != "All":
+                rows = [
+                    row for row in rows
+                    if str(row.get("transaction_type") or "") == transaction_type
+                ]
+            status = str(filters.get("status") or "All")
+            if status != "All":
+                rows = [
+                    row for row in rows
+                    if str(row.get("status") or "") == status
+                ]
             party = str(filters.get("party") or "").strip().lower()
             if party:
                 rows = [row for row in rows if party in str(row).lower()]
 
+        if filter_mode == "purchase_order":
+            status = str(filters.get("status") or "All")
+            if status != "All":
+                rows = [
+                    row for row in rows
+                    if str(row.get("status") or "") == status
+                ]
+            if search:
+                rows = [
+                    row for row in rows
+                    if search in str(row.get("creditor_name") or "").lower()
+                ]
+
+        if filter_mode == "daily_stock":
+            excluded_types = {"quotation", "estimate", "draft"}
+            rows = [
+                row for row in rows
+                if str(row.get("voucher_type") or "").lower() not in excluded_types
+            ]
+            product_name = str(filters.get("product") or "").strip().lower()
+            if product_name:
+                products = self._fetch_table(
+                    "products",
+                    company_id,
+                    select="id,name",
+                    limit=2000,
+                )
+                product_ids = {
+                    str(product.get("id"))
+                    for product in products
+                    if product_name in str(product.get("name") or "").lower()
+                }
+                rows = [
+                    row for row in rows
+                    if str(row.get("product_id")) in product_ids
+                ]
+            movement_type = str(filters.get("voucher_type") or "All")
+            if movement_type != "All":
+                rows = [
+                    row for row in rows
+                    if str(row.get("movement_type") or "") == movement_type
+                ]
+            if from_date:
+                rows = [
+                    row for row in rows
+                    if self._movement_row_date(row) >= from_date
+                ]
+            if to_date:
+                rows = [
+                    row for row in rows
+                    if self._movement_row_date(row) <= to_date
+                ]
+            return rows
+
+        if date_col:
+            if from_date:
+                if date_col in {"movement_date", "created_at"} and filter_mode == "daily_stock":
+                    rows = [
+                        row for row in rows
+                        if self._movement_row_date(row) >= from_date
+                    ]
+                elif date_col == "movement_date":
+                    rows = [
+                        row for row in rows
+                        if self._movement_row_date(row) >= from_date
+                    ]
+                else:
+                    rows = [
+                        row for row in rows
+                        if str(row.get(date_col) or "")[:10] >= from_date
+                    ]
+            if to_date:
+                if date_col in {"movement_date", "created_at"} and filter_mode == "daily_stock":
+                    rows = [
+                        row for row in rows
+                        if self._movement_row_date(row) <= to_date
+                    ]
+                elif date_col == "movement_date":
+                    rows = [
+                        row for row in rows
+                        if self._movement_row_date(row) <= to_date
+                    ]
+                else:
+                    rows = [
+                        row for row in rows
+                        if str(row.get(date_col) or "")[:10] <= to_date
+                    ]
+
+        if search and filter_mode not in {"purchase_order"}:
+            rows = [row for row in rows if search in str(row).lower()]
+
+        party = str(filters.get("party") or "").strip().lower()
+        if party and party not in {"all parties", "all"}:
+            rows = [row for row in rows if party in str(row).lower()]
+
+        product = str(filters.get("product") or "").strip().lower()
+        if product:
+            rows = [row for row in rows if product in str(row).lower()]
+
+        category = str(filters.get("category") or "").strip().lower()
+        if category and category not in {"all categories", "all"}:
+            rows = [row for row in rows if category in str(row).lower()]
+
+        gst_value = str(filters.get("gst") or "").strip()
+        if gst_value:
+            rows = [
+                row for row in rows
+                if gst_value in str(row.get("gst_percent", row.get("tax_percent", "")))
+            ]
+
         return rows
 
-    def run_report(self, slug: str, filters: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    def run_report(
+        self,
+        slug: str,
+        filters: Optional[dict[str, Any]] = None,
+        company_id: Optional[int] = None,
+    ) -> dict[str, Any]:
         """Run a cloud report from synced Supabase tables."""
         definition = get_route_definition(slug)
         if definition is None:
             return {"success": False, "message": f"Unknown route: {slug}", "rows": []}
 
-        company_id = self.resolve_company_id()
-        if not company_id:
+        resolved_id = self.resolve_company_id(company_id)
+        if not resolved_id:
             return {"success": False, "message": "No company found in Supabase.", "rows": []}
+
+        filters = filters or {}
+
+        if slug == "ledger":
+            try:
+                return self._run_cloud_ledger(resolved_id, filters)
+            except Exception as exc:
+                return {
+                    "success": False,
+                    "message": f"Ledger report failed: {exc}",
+                    "rows": [],
+                    "data_source": "supabase",
+                }
 
         source = get_report_source(slug)
         if source is None:
@@ -364,12 +647,11 @@ class MobileSupabaseService:
             }
 
         table_name, date_col, filter_mode = source
-        filters = filters or {}
 
         try:
             rows = self._fetch_table(
                 table_name,
-                company_id,
+                resolved_id,
                 limit=1000,
                 order_col=date_col,
             )
@@ -379,7 +661,7 @@ class MobileSupabaseService:
                 filters,
                 date_col,
                 filter_mode,
-                company_id,
+                resolved_id,
             )
             if not rows:
                 return {

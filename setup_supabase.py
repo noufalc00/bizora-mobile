@@ -46,6 +46,12 @@ TABLE_ORDER = (
     "purchase_items",
     "purchase_returns",
     "ledger_entries",
+    "quotations",
+    "quotation_items",
+    "purchase_orders",
+    "purchase_order_items",
+    "pdc_register",
+    "stock_movements",
 )
 
 # f-string placeholders used inside db.py CREATE TABLE blocks.

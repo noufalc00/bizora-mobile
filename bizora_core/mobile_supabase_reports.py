@@ -8,7 +8,6 @@ from __future__ import annotations
 SUPABASE_REPORT_SOURCES: dict[str, tuple[str, str | None, str | None]] = {
     "day-book": ("ledger_entries", "voucher_date", None),
     "cash-book": ("ledger_entries", "voucher_date", "cash_bank"),
-    "ledger": ("ledger_entries", "voucher_date", None),
     "ledger-statement": ("ledger_entries", "voucher_date", "account_id"),
     "journal-book": ("ledger_entries", "voucher_date", "journal"),
     "sales-book": ("sales", "invoice_date", None),
@@ -31,6 +30,10 @@ SUPABASE_REPORT_SOURCES: dict[str, tuple[str, str | None, str | None]] = {
     "stock-value": ("products", None, None),
     "best-sellers-top-products": ("sales_items", None, None),
     "salesman-record-book": ("sales", "invoice_date", None),
+    "quotation-book": ("quotations", "quotation_date", None),
+    "purchase-order-book": ("purchase_orders", "date", "purchase_order"),
+    "pdc-book": ("pdc_register", "cheque_date", "pdc"),
+    "daily-stock-register": ("stock_movements", "created_at", "daily_stock"),
 }
 
 UNSUPPORTED_CLOUD_MESSAGE = (

@@ -10,6 +10,7 @@ from typing import Any, Callable, Dict, List, Optional
 from config import CURRENCY_SYMBOL, active_company_manager
 from db import Database, get_default_database_path
 from bizora_core.dashboard_logic import DashboardLogic
+from bizora_core.mobile_report_lookups import build_local_report_lookups
 from bizora_core.mobile_web_registry import (
     VOUCHER_BOOK_MODES,
     build_navigation_payload,
@@ -38,7 +39,6 @@ def _load_voucher_logic_map() -> dict[str, type]:
         "purchase-book": PurchaseBookLogic,
         "purchase-return-book": PurchaseReturnBookLogic,
         "quotation-book": QuotationBookLogic,
-        "purchase-order-book": QuotationBookLogic,
     }
     VOUCHER_LOGIC_MAP.update(mapping)
     return VOUCHER_LOGIC_MAP
@@ -51,8 +51,10 @@ class MobileWebService:
         self.db = db or Database()
         self.dashboard_logic = DashboardLogic(self.db)
 
-    def resolve_company_id(self) -> Optional[int]:
-        """Return the active desktop session company or the DB active company."""
+    def resolve_company_id(self, override_id: Optional[int] = None) -> Optional[int]:
+        """Return the mobile session, desktop session, or DB active company."""
+        if override_id:
+            return int(override_id)
         session_id = active_company_manager.get_active_company_id()
         if session_id:
             return int(session_id)
@@ -79,7 +81,7 @@ class MobileWebService:
 
     def get_dashboard_payload(self, company_id: Optional[int] = None) -> dict[str, Any]:
         """Return the same dashboard metrics/charts/activity as the desktop widget."""
-        resolved_id = company_id or self.resolve_company_id()
+        resolved_id = self.resolve_company_id(company_id)
         if not resolved_id:
             return {
                 "success": False,
@@ -126,35 +128,37 @@ class MobileWebService:
             "sections": build_navigation_payload(),
         }
 
-    def get_report_meta(self, slug: str) -> dict[str, Any]:
+    def get_report_meta(self, slug: str, company_id: Optional[int] = None) -> dict[str, Any]:
         """Return filter schema and lookup data for one report route."""
         definition = get_route_definition(slug)
         if definition is None:
             return {"success": False, "message": f"Unknown route: {slug}"}
 
-        company_id = self.resolve_company_id()
+        resolved_id = self.resolve_company_id(company_id)
         lookups: dict[str, Any] = {}
-        if company_id and definition["handler"] == "ledger_statement":
-            from bizora_core.ledger_logic import LedgerLogic
-
-            ledger_logic = LedgerLogic(self.db)
-            lookups["accounts"] = ledger_logic.get_general_ledger_accounts(company_id)
+        if resolved_id:
+            lookups = build_local_report_lookups(self.db, resolved_id, slug)
 
         return {
             "success": True,
             "route": definition,
             "lookups": lookups,
-            "company_id": company_id,
+            "company_id": resolved_id,
         }
 
-    def run_report(self, slug: str, filters: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    def run_report(
+        self,
+        slug: str,
+        filters: Optional[dict[str, Any]] = None,
+        company_id: Optional[int] = None,
+    ) -> dict[str, Any]:
         """Execute one mobile report using the desktop logic layer."""
         definition = get_route_definition(slug)
         if definition is None:
             return {"success": False, "message": f"Unknown route: {slug}", "rows": []}
 
-        company_id = self.resolve_company_id()
-        if not company_id:
+        resolved_id = self.resolve_company_id(company_id)
+        if not resolved_id:
             return {
                 "success": False,
                 "message": "No active company is open.",
@@ -177,6 +181,7 @@ class MobileWebService:
             "monthly_analysis": self._run_monthly_analysis,
             "journal_book": self._run_journal_book,
             "pdc_book": self._run_pdc_book,
+            "purchase_order_book": self._run_purchase_order_book,
             "sales_profit_book": self._run_sales_profit_book,
             "cash_tender_history": self._run_cash_tender_history,
             "daily_stock_register": self._run_daily_stock_register,
@@ -196,7 +201,7 @@ class MobileWebService:
                 "rows": [],
             }
         try:
-            return handler(company_id, definition, filters or {})
+            return handler(resolved_id, definition, filters or {})
         except Exception as exc:
             print(f"[MOBILE] Report '{slug}' failed: {exc}")
             return {"success": False, "message": str(exc), "rows": []}
@@ -445,11 +450,54 @@ class MobileWebService:
         from bizora_core.pdc_book_logic import PDCBookLogic
 
         logic = PDCBookLogic(self.db)
+        local_filters = {
+            key: filters.get(key)
+            for key in ("transaction_type", "status", "party")
+            if filters.get(key) not in (None, "", "All")
+        }
         rows = logic.get_pdc_book_data(
             company_id,
             self._parse_date(filters.get("from_date")),
             self._parse_date(filters.get("to_date")),
+            filters=local_filters,
         )
+        party = str(filters.get("party") or "").strip().lower()
+        if party:
+            rows = [row for row in rows if party in str(row).lower()]
+        return {"success": True, "message": "", "rows": rows}
+
+    def _run_purchase_order_book(
+        self,
+        company_id: int,
+        _definition: dict[str, Any],
+        filters: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Return purchase order register rows with desktop-style filters."""
+        ph = self.db._get_placeholder()
+        clauses = [f"company_id = {ph}"]
+        params: list[Any] = [company_id]
+        from_date = self._parse_date(filters.get("from_date"))
+        to_date = self._parse_date(filters.get("to_date"))
+        clauses.append(f"DATE(date) >= DATE({ph})")
+        params.append(from_date)
+        clauses.append(f"DATE(date) <= DATE({ph})")
+        params.append(to_date)
+        status = str(filters.get("status") or "All")
+        if status != "All":
+            clauses.append(f"status = {ph}")
+            params.append(status)
+        search = str(filters.get("search") or "").strip()
+        if search:
+            clauses.append(f"LOWER(creditor_name) LIKE LOWER({ph})")
+            params.append(f"%{search}%")
+        query = f"""
+            SELECT id, po_number, date, creditor_name, grand_total, status
+            FROM purchase_orders
+            WHERE {' AND '.join(clauses)}
+            ORDER BY date DESC, po_number DESC
+            LIMIT 500
+        """
+        rows = self.db.execute_query(query, tuple(params)) or []
         return {"success": True, "message": "", "rows": rows}
 
     def _run_sales_profit_book(self, company_id: int, _definition: dict[str, Any], filters: dict[str, Any]) -> dict[str, Any]:
@@ -486,10 +534,31 @@ class MobileWebService:
         from bizora_core.daily_stock_register_logic import DailyStockRegisterLogic
 
         logic = DailyStockRegisterLogic(self.db)
+        product_name = str(filters.get("product") or "").strip()
+        product_id = None
+        if product_name:
+            ph = self.db._get_placeholder()
+            product_rows = self.db.execute_query(
+                f"""
+                SELECT id
+                FROM products
+                WHERE company_id = {ph}
+                  AND LOWER(name) LIKE LOWER({ph})
+                ORDER BY LOWER(name)
+                LIMIT 1
+                """,
+                (company_id, f"%{product_name}%"),
+            ) or []
+            if product_rows:
+                product_id = int(product_rows[0].get("id"))
+        movement_type = str(filters.get("voucher_type") or "All")
+        voucher_type = None if movement_type == "All" else movement_type
         rows = logic.get_stock_register_data(
             company_id,
             self._parse_date(filters.get("from_date")),
             self._parse_date(filters.get("to_date")),
+            product_id=product_id,
+            voucher_type=voucher_type,
         )
         return {"success": True, "message": "", "rows": rows}
 

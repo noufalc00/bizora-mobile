@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 from typing import Any, Optional, Protocol
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -54,9 +54,14 @@ class MobileServiceProtocol(Protocol):
 
     def get_dashboard_payload(self, company_id: Optional[int] = None) -> dict[str, Any]: ...
 
-    def get_report_meta(self, slug: str) -> dict[str, Any]: ...
+    def get_report_meta(self, slug: str, company_id: Optional[int] = None) -> dict[str, Any]: ...
 
-    def run_report(self, slug: str, filters: Optional[dict[str, Any]] = None) -> dict[str, Any]: ...
+    def run_report(
+        self,
+        slug: str,
+        filters: Optional[dict[str, Any]] = None,
+        company_id: Optional[int] = None,
+    ) -> dict[str, Any]: ...
 
 
 def resolve_server_port() -> int:
@@ -104,6 +109,40 @@ class ReportRequest(BaseModel):
     """Filter payload for mobile report execution."""
 
     filters: dict[str, Any] = Field(default_factory=dict)
+
+
+class LoginRequest(BaseModel):
+    """Mobile login payload matching the desktop company gateway."""
+
+    company_id: int
+    username: str
+    password: str = ""
+    is_secret: bool = False
+
+
+def _resolve_company_id_param(
+    company_id: Optional[int] = Query(default=None),
+    x_bizora_company_id: Optional[str] = Header(default=None),
+) -> Optional[int]:
+    """Resolve company scope from query string or mobile session header."""
+    if company_id is not None:
+        try:
+            return int(company_id)
+        except (TypeError, ValueError):
+            return None
+    header_value = (x_bizora_company_id or "").strip()
+    if header_value.isdigit():
+        return int(header_value)
+    return None
+
+
+def _auth_backend():
+    """Return auth helpers for the active mobile data backend."""
+    if _data_source == "supabase":
+        return _service, "supabase"
+    from bizora_core.mobile_auth_service import MobileAuthService
+
+    return MobileAuthService(), "local"
 
 
 def _inject_mobile_html(content: str) -> str:
@@ -195,18 +234,89 @@ def api_navigation() -> dict[str, Any]:
     return payload
 
 
+@app.get("/api/auth/bootstrap")
+def api_auth_bootstrap() -> dict[str, Any]:
+    """Return last active company and usernames for the mobile login screen."""
+    auth_service, source = _auth_backend()
+    if source == "supabase":
+        payload = auth_service.get_bootstrap()
+    else:
+        payload = auth_service.get_bootstrap()
+    payload["data_source"] = _data_source
+    return payload
+
+
+@app.get("/api/companies")
+def api_companies(
+    visibility: Optional[str] = Query(default="normal"),
+) -> dict[str, Any]:
+    """List companies available for mobile login."""
+    auth_service, source = _auth_backend()
+    if source == "supabase":
+        payload = auth_service.list_companies(visibility=visibility)
+    else:
+        payload = auth_service.list_companies(visibility=visibility)
+    payload["data_source"] = _data_source
+    return payload
+
+
+@app.get("/api/companies/{company_id}/users")
+def api_company_users(company_id: int) -> dict[str, Any]:
+    """Return usernames for one company on the login screen."""
+    if _data_source == "supabase":
+        return {
+            "success": True,
+            "usernames": ["admin"],
+            "data_source": _data_source,
+        }
+    from bizora_core.mobile_auth_service import MobileAuthService
+
+    auth_service = MobileAuthService()
+    return {
+        "success": True,
+        "usernames": auth_service.list_usernames(company_id),
+        "data_source": _data_source,
+    }
+
+
+@app.post("/api/auth/login")
+def api_auth_login(body: LoginRequest) -> dict[str, Any]:
+    """Authenticate and open a company for mobile dashboard access."""
+    auth_service, source = _auth_backend()
+    if source == "supabase":
+        payload = auth_service.cloud_login(
+            body.company_id,
+            body.username,
+            is_secret=body.is_secret,
+        )
+    else:
+        payload = auth_service.login(
+            body.company_id,
+            body.username,
+            body.password,
+            is_secret=body.is_secret,
+        )
+    payload["data_source"] = _data_source
+    return payload
+
+
 @app.get("/api/dashboard")
-def api_dashboard() -> dict[str, Any]:
+def api_dashboard(
+    company_id: Optional[int] = Depends(_resolve_company_id_param),
+) -> dict[str, Any]:
     """Return the dashboard payload from the active backend."""
-    payload = _service.get_dashboard_payload()
+    payload = _service.get_dashboard_payload(company_id=company_id)
     payload["data_source"] = _data_source
     return payload
 
 
 @app.get("/api/reports/{slug}/meta")
-def api_report_meta(slug: str) -> dict[str, Any]:
+def api_report_meta(
+    slug: str,
+    company_id: Optional[int] = Depends(_resolve_company_id_param),
+) -> dict[str, Any]:
     """Return filter schema and lookup values for one report route."""
-    payload = _service.get_report_meta(slug)
+    payload = _service.get_report_meta(slug, company_id=company_id)
     if not payload.get("success"):
         raise HTTPException(status_code=404, detail=payload.get("message", "Not found"))
     payload["data_source"] = _data_source
@@ -214,9 +324,13 @@ def api_report_meta(slug: str) -> dict[str, Any]:
 
 
 @app.post("/api/reports/{slug}/run")
-def api_report_run(slug: str, body: ReportRequest) -> dict[str, Any]:
+def api_report_run(
+    slug: str,
+    body: ReportRequest,
+    company_id: Optional[int] = Depends(_resolve_company_id_param),
+) -> dict[str, Any]:
     """Execute one Books/Reports query with the supplied filters."""
-    payload = _service.run_report(slug, body.filters)
+    payload = _service.run_report(slug, body.filters, company_id=company_id)
     payload["data_source"] = _data_source
     return payload
 
@@ -252,6 +366,40 @@ def mobile_css_asset() -> FileResponse:
     return FileResponse(
         asset,
         media_type="text/css",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
+
+
+@app.get("/static/app_logo.png")
+def mobile_logo_asset() -> FileResponse:
+    """Serve the BIZORA brand logo for the mobile top bar."""
+    asset = MOBILE_STATIC_DIR / "app_logo.png"
+    if not asset.is_file():
+        fallback = ROOT_DIR / "assets" / "icons" / "app_logo.png"
+        if fallback.is_file():
+            asset = fallback
+        else:
+            raise HTTPException(status_code=404, detail="app_logo.png not found")
+    return FileResponse(
+        asset,
+        media_type="image/png",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
+
+
+@app.get("/static/file.svg")
+def mobile_file_icon_asset() -> FileResponse:
+    """Serve the secret file icon used on the mobile login screen."""
+    asset = MOBILE_STATIC_DIR / "file.svg"
+    if not asset.is_file():
+        fallback = ROOT_DIR / "assets" / "icons" / "file.svg"
+        if fallback.is_file():
+            asset = fallback
+        else:
+            raise HTTPException(status_code=404, detail="file.svg not found")
+    return FileResponse(
+        asset,
+        media_type="image/svg+xml",
         headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
     )
 
