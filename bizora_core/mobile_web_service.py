@@ -283,17 +283,34 @@ class MobileWebService:
 
     def _run_day_book(self, company_id: int, _definition: dict[str, Any], filters: dict[str, Any]) -> dict[str, Any]:
         from bizora_core.day_book_logic import DayBookLogic
+        from bizora_core.mobile_supabase_day_book import DAY_BOOK_SUMMARY_LABELS
 
         logic = DayBookLogic(self.db)
+        from_date = self._parse_date(filters.get("from_date"))
+        to_date = self._parse_date(filters.get("to_date"))
+        summarize_entries = bool(filters.get("summarize_entries", True))
+        summarize_debtors = bool(filters.get("summarize_debtors", False))
+        summarize_creditors = bool(filters.get("summarize_creditors", False))
         result = logic.get_day_book_entries(
             company_id,
-            self._parse_date(filters.get("from_date")),
-            self._parse_date(filters.get("to_date")),
-            summarize_entries=bool(filters.get("summarize_entries", True)),
-            summarize_debtors=bool(filters.get("summarize_debtors", False)),
-            summarize_creditors=bool(filters.get("summarize_creditors", False)),
+            from_date,
+            to_date,
+            summarize_entries=summarize_entries,
+            summarize_debtors=summarize_debtors,
+            summarize_creditors=summarize_creditors,
         )
-        return self._rows_from_logic_result(result)
+        payload = self._rows_from_logic_result(result)
+        summary_result = logic.get_day_book_summary(
+            company_id,
+            from_date,
+            to_date,
+            summarize_entries=summarize_entries,
+            summarize_debtors=summarize_debtors,
+            summarize_creditors=summarize_creditors,
+        )
+        payload["summary"] = summary_result.get("data") or {}
+        payload["summary_labels"] = DAY_BOOK_SUMMARY_LABELS
+        return payload
 
     def _run_cash_book(self, company_id: int, _definition: dict[str, Any], filters: dict[str, Any]) -> dict[str, Any]:
         from bizora_core.cash_book_logic import CashBookLogic

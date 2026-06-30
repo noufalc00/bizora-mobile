@@ -1041,9 +1041,71 @@
     );
   }
 
-  function formatTableCell(columnKey, value) {
+  function formatDisplayDate(value) {
+    const text = String(value || "").trim().slice(0, 10);
+    if (!text || !/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+      return text;
+    }
+    const [year, month, day] = text.split("-");
+    return `${day}-${month}-${year}`;
+  }
+
+  function renderDayBookSummary(summary, labels) {
+    if (!summary || !Object.keys(summary).length) {
+      return "";
+    }
+    const order = [
+      "opening_balance",
+      "day_debit_total",
+      "day_credit_total",
+      "cash_bank_debit_total",
+      "cash_bank_credit_total",
+      "closing_balance",
+    ];
+    const items = order
+      .filter((key) => summary[key] != null)
+      .map((key) => {
+        const label = (labels && labels[key]) || key.replace(/_/g, " ");
+        return `
+          <div class="day-book-summary-item">
+            <span>${label}</span>
+            <strong>${formatMoney(summary[key])}</strong>
+          </div>
+        `;
+      })
+      .join("");
+    return items ? `<section class="day-book-summary">${items}</section>` : "";
+  }
+
+  function dayBookRowClass(row) {
+    const rowType = String(row.row_type || row.entry_type || "").toLowerCase();
+    if (rowType === "opening") {
+      return "row-opening";
+    }
+    if (rowType === "total") {
+      return "row-total";
+    }
+    if (rowType === "closing_balance") {
+      return "row-closing";
+    }
+    return "";
+  }
+
+  function formatTableCell(columnKey, value, options) {
+    const opts = options || {};
     if (value === null || value === undefined || value === "") {
       return "";
+    }
+    if (
+      opts.slug === "day-book"
+      && (columnKey === "debit" || columnKey === "credit")
+      && !Number.isNaN(Number(value))
+      && Number(value) === 0
+    ) {
+      return "";
+    }
+    if (opts.slug === "day-book" && columnKey === "date" && value) {
+      return formatDisplayDate(value);
     }
     if (MONEY_COLUMN_KEYS.has(columnKey) && !Number.isNaN(Number(value))) {
       return formatMoney(value);
@@ -1051,7 +1113,8 @@
     return value;
   }
 
-  function renderResultTable(rows, columnsMeta, rowCount) {
+  function renderResultTable(rows, columnsMeta, rowCount, options) {
+    const opts = options || {};
     if (!rows || !rows.length) {
       return '<div class="empty-state">No records found for the selected filters.</div>';
     }
@@ -1073,8 +1136,11 @@
         return `<th class="${numClass.trim()}">${column.label || column.key}</th>`;
       })
       .join("");
+
+    let previousDate = "";
     const body = rows
       .map((row, rowIndex) => {
+        const rowClass = opts.slug === "day-book" ? dayBookRowClass(row) : "";
         const cells = columns
           .map((column) => {
             const numClass = isNumericColumn(column.key) ? " num" : "";
@@ -1082,10 +1148,25 @@
             if (column.key === "sl_no" && (value === "" || value == null)) {
               value = rowIndex + 1;
             }
-            return `<td class="${numClass.trim()}">${formatTableCell(column.key, value)}</td>`;
+            if (
+              opts.slug === "day-book"
+              && column.key === "date"
+              && rowClass !== "row-opening"
+            ) {
+              const currentDate = String(row.date || "");
+              if (previousDate && currentDate === previousDate) {
+                value = "";
+              } else {
+                previousDate = currentDate;
+              }
+            }
+            if (opts.slug === "day-book" && column.key === "date" && rowClass === "row-opening") {
+              previousDate = String(row.date || "");
+            }
+            return `<td class="${numClass.trim()}">${formatTableCell(column.key, value, opts)}</td>`;
           })
           .join("");
-        return `<tr>${cells}</tr>`;
+        return `<tr class="${rowClass}">${cells}</tr>`;
       })
       .join("");
 
@@ -1094,7 +1175,12 @@
         ? `<p class="report-meta">${rowCount} record${rowCount === 1 ? "" : "s"}</p>`
         : `<p class="report-meta">${rows.length} record${rows.length === 1 ? "" : "s"}</p>`;
 
+    const summaryHtml = opts.slug === "day-book"
+      ? renderDayBookSummary(opts.summary, opts.summaryLabels)
+      : "";
+
     return `
+      ${summaryHtml}
       ${meta}
       <div class="table-wrap">
         <table class="data-table">
@@ -1121,6 +1207,11 @@
         payload.rows || [],
         payload.columns || [],
         payload.row_count,
+        {
+          slug,
+          summary: payload.summary || null,
+          summaryLabels: payload.summary_labels || null,
+        },
       );
     } catch (error) {
       resultRoot.innerHTML = `<div class="error-state">${formatFetchError(error)}</div>`;

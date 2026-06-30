@@ -351,10 +351,51 @@ button, input, select {
   color: var(--muted-text);
 }
 
+.day-book-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0 0 12px;
+}
+
+.day-book-summary-item {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  font-size: 11px;
+}
+
+.day-book-summary-item span {
+  display: block;
+  color: var(--muted-text);
+  margin-bottom: 2px;
+}
+
+.day-book-summary-item strong {
+  color: var(--accent);
+  font-size: 13px;
+}
+
 .data-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 11px;
+}
+
+.data-table tr.row-opening td {
+  background: rgba(37, 99, 235, 0.22);
+  font-weight: 700;
+}
+
+.data-table tr.row-total td {
+  background: rgba(100, 116, 139, 0.35);
+  font-weight: 700;
+}
+
+.data-table tr.row-closing td {
+  background: rgba(22, 163, 74, 0.24);
+  font-weight: 700;
 }
 
 .data-table th,

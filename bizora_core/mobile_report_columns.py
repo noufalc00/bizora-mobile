@@ -346,6 +346,10 @@ def project_rows_for_columns(
                 for _, key in column_pairs
             }
         )
+        if row.get("row_type"):
+            projected[-1]["row_type"] = row.get("row_type")
+        if row.get("entry_type"):
+            projected[-1]["entry_type"] = row.get("entry_type")
     return projected
 
 

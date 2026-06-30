@@ -62,95 +62,10 @@ def run_cloud_day_book(
     company_id: int,
     filters: dict[str, Any],
 ) -> dict[str, Any]:
-    """Build Day Book rows (Date, V.No, Particulars, Debit, Credit, Voucher Type)."""
-    from_date = _parse_date(filters.get("from_date"))
-    to_date = _parse_date(filters.get("to_date"))
-    summarize = bool(filters.get("summarize_entries", True))
+    """Build Day Book rows using desktop Cash/Bank Day Book logic."""
+    from bizora_core.mobile_supabase_day_book import run_day_book_from_supabase
 
-    accounts = fetch_table(
-        "ledger_accounts",
-        company_id,
-        select="id,account_name,account_type",
-        limit=2000,
-    )
-    account_names = {
-        int(row["id"]): str(row.get("account_name") or "")
-        for row in accounts
-        if row.get("id") is not None
-    }
-
-    entries = fetch_table(
-        "ledger_entries",
-        company_id,
-        select="voucher_date,voucher_no,voucher_type,voucher_id,account_id,debit,credit,narration",
-        limit=15000,
-        order_col="voucher_date",
-    )
-
-    filtered = [
-        row for row in entries
-        if _in_range(row.get("voucher_date"), from_date, to_date)
-        and str(row.get("voucher_type") or "") not in _QUOTE_TYPES
-    ]
-
-    if summarize:
-        buckets: dict[tuple[str, str, str], dict[str, Any]] = {}
-        for row in filtered:
-            key = (
-                _parse_date(row.get("voucher_date")),
-                str(row.get("voucher_no") or ""),
-                str(row.get("voucher_type") or ""),
-            )
-            account_id = row.get("account_id")
-            particulars = account_names.get(int(account_id), "") if account_id is not None else ""
-            if not particulars:
-                particulars = str(row.get("narration") or "Ledger Account")
-            bucket = buckets.setdefault(
-                key,
-                {
-                    "date": key[0],
-                    "voucher_no": key[1],
-                    "particulars": particulars,
-                    "debit": 0.0,
-                    "credit": 0.0,
-                    "voucher_type": key[2].replace("_", " ").title(),
-                },
-            )
-            bucket["debit"] += _safe_float(row.get("debit"))
-            bucket["credit"] += _safe_float(row.get("credit"))
-            if len(particulars) > len(str(bucket.get("particulars") or "")):
-                bucket["particulars"] = particulars
-
-        rows = [
-            {
-                "date": value["date"],
-                "voucher_no": value["voucher_no"],
-                "particulars": value["particulars"],
-                "debit": round(value["debit"], 2),
-                "credit": round(value["credit"], 2),
-                "voucher_type": value["voucher_type"],
-            }
-            for value in sorted(buckets.values(), key=lambda item: (item["date"], item["voucher_no"]))
-        ]
-    else:
-        rows = []
-        for row in filtered:
-            account_id = row.get("account_id")
-            particulars = account_names.get(int(account_id), "") if account_id is not None else ""
-            if not particulars:
-                particulars = str(row.get("narration") or "Ledger Account")
-            rows.append(
-                {
-                    "date": _parse_date(row.get("voucher_date")),
-                    "voucher_no": row.get("voucher_no", ""),
-                    "particulars": particulars,
-                    "debit": round(_safe_float(row.get("debit")), 2),
-                    "credit": round(_safe_float(row.get("credit")), 2),
-                    "voucher_type": str(row.get("voucher_type") or "").replace("_", " ").title(),
-                }
-            )
-
-    return _finish("day-book", rows, filters, "day_book")
+    return run_day_book_from_supabase(fetch_table, company_id, filters)
 
 
 def run_cloud_cash_book(
