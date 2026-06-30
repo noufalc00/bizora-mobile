@@ -13,7 +13,7 @@ from typing import Any, Optional, Protocol
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -107,11 +107,26 @@ class ReportRequest(BaseModel):
 
 
 def _inject_mobile_html(content: str) -> str:
-    """Inject optional remote API base for split static/API hosting."""
-    public_url = (os.getenv("MOBILE_PUBLIC_URL") or "").strip().rstrip("/")
+    """Inject or update optional remote API base for split static/API hosting."""
+    import re
+
+    split_host = (os.getenv("MOBILE_SPLIT_HOST") or "").strip().lower() in {"1", "true", "yes"}
+    force_relative = (os.getenv("MOBILE_FORCE_RELATIVE_API") or "true").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    public_url = ""
+    if split_host and not force_relative:
+        public_url = (os.getenv("MOBILE_PUBLIC_URL") or "").strip().rstrip("/")
     meta_tag = f'<meta name="mobile-api-base" content="{public_url}">'
     if 'name="mobile-api-base"' in content:
-        return content
+        return re.sub(
+            r'<meta\s+name="mobile-api-base"\s+content="[^"]*"\s*/?>',
+            meta_tag,
+            content,
+            count=1,
+        )
     return content.replace(
         '<meta name="theme-color"',
         f'{meta_tag}\n  <meta name="theme-color"',
@@ -213,6 +228,32 @@ def mobile_home() -> HTMLResponse:
         raise HTTPException(status_code=404, detail="mobile_web/index.html not found")
     content = _inject_mobile_html(MOBILE_INDEX.read_text(encoding="utf-8"))
     return HTMLResponse(content=content, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/static/mobile.js")
+def mobile_js_asset() -> FileResponse:
+    """Serve mobile JS with no-cache so phones always get the latest build."""
+    asset = MOBILE_STATIC_DIR / "mobile.js"
+    if not asset.is_file():
+        raise HTTPException(status_code=404, detail="mobile.js not found")
+    return FileResponse(
+        asset,
+        media_type="application/javascript",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
+
+
+@app.get("/static/mobile.css")
+def mobile_css_asset() -> FileResponse:
+    """Serve mobile CSS with no-cache so phones always get the latest build."""
+    asset = MOBILE_STATIC_DIR / "mobile.css"
+    if not asset.is_file():
+        raise HTTPException(status_code=404, detail="mobile.css not found")
+    return FileResponse(
+        asset,
+        media_type="text/css",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
 
 
 if MOBILE_STATIC_DIR.is_dir():

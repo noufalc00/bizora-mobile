@@ -35,6 +35,11 @@ button, input, select {
   font: inherit;
 }
 
+.loading-state {
+  line-height: 1.5;
+  padding: 1.25rem;
+}
+
 .hidden {
   display: none !important;
 }

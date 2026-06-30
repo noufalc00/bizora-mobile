@@ -2,13 +2,47 @@
   "use strict";
 
   const THEME_KEY = "bizora_mobile_theme";
-  const apiBaseMeta = document.querySelector('meta[name="mobile-api-base"]');
-  const API_BASE = apiBaseMeta && apiBaseMeta.getAttribute("content")
-    ? apiBaseMeta.getAttribute("content").replace(/\/$/, "")
-    : "";
+  const FETCH_TIMEOUT_MS = 60000;
+
+  const storage = {
+    get(key, fallback) {
+      try {
+        const value = localStorage.getItem(key);
+        return value == null ? fallback : value;
+      } catch (error) {
+        return fallback;
+      }
+    },
+    set(key, value) {
+      try {
+        localStorage.setItem(key, value);
+      } catch (error) {
+        /* Safari private mode — ignore */
+      }
+    },
+  };
+
+  function resolveApiBase() {
+    const meta = document.querySelector('meta[name="mobile-api-base"]');
+    const configured = meta ? String(meta.getAttribute("content") || "").replace(/\/$/, "") : "";
+    if (!configured) {
+      return "";
+    }
+    try {
+      const target = new URL(configured, window.location.origin);
+      if (target.host === window.location.host) {
+        return "";
+      }
+      return configured;
+    } catch (error) {
+      return "";
+    }
+  }
+
+  const API_BASE = resolveApiBase();
 
   const state = {
-    theme: localStorage.getItem(THEME_KEY) || "dark",
+    theme: storage.get(THEME_KEY, "dark"),
     colors: {},
     currency: "₹",
     view: "dashboard",
@@ -35,25 +69,91 @@
   }
 
   function apiPath(path) {
-    return `${API_BASE}${path}`;
+    if (!path) {
+      return API_BASE || "/";
+    }
+    if (path.charAt(0) === "/") {
+      return `${API_BASE}${path}`;
+    }
+    return `${API_BASE}/${path}`;
+  }
+
+  function isCloudHost() {
+    return window.location.hostname.indexOf("onrender.com") >= 0;
+  }
+
+  function showLoadingMessage(message) {
+    el.main.innerHTML = `<div class="empty-state loading-state">${message}</div>`;
+  }
+
+  function startLoadingProgress(baseMessage) {
+    let seconds = 0;
+    showLoadingMessage(baseMessage);
+    const timer = window.setInterval(() => {
+      seconds += 1;
+      if (seconds >= 8 && isCloudHost()) {
+        showLoadingMessage(
+          `${baseMessage}<br><br>Waking up cloud server (Render free tier). This can take up to 60 seconds on phone networks.`,
+        );
+      }
+    }, 1000);
+    return function stopLoadingProgress() {
+      window.clearInterval(timer);
+    };
+  }
+
+  async function fetchWithTimeout(url, options) {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    try {
+      return await fetch(url, Object.assign({}, options || {}, { signal: controller.signal }));
+    } catch (error) {
+      if (error && error.name === "AbortError") {
+        throw new Error(
+          "Request timed out. On Render free tier, wait 60 seconds and tap refresh. "
+          + "Use Wi-Fi or strong mobile data.",
+        );
+      }
+      throw error;
+    } finally {
+      window.clearTimeout(timer);
+    }
+  }
+
+  function formatFetchError(error) {
+    const raw = (error && error.message) ? String(error.message) : "Unknown error";
+    if (raw === "Failed to fetch" || raw.indexOf("NetworkError") >= 0) {
+      const host = window.location.hostname;
+      if (host === "127.0.0.1" || host === "localhost") {
+        return (
+          "API server is not running on this PC. Open PowerShell in the project folder and run: "
+          + "python start_cloud_mobile.py"
+        );
+      }
+      if (/^10\.|^192\.168\.|^172\.(1[6-9]|2\d|3[0-1])\./.test(host)) {
+        return (
+          "Cannot reach the API on your PC. Keep start_cloud_mobile.py running, use the same "
+          + "LAN address on phone and PC, and allow port 8080 in Windows Firewall."
+        );
+      }
+      return (
+        "Cannot reach the API server. On Render free tier, wait up to 60 seconds and refresh. "
+        + "Clear browser cache on phone if the page stays on Loading."
+      );
+    }
+    return raw;
   }
 
   function connectionHelpMessage() {
-    if (window.location.hostname === "127.0.0.1" || window.location.hostname === "localhost") {
-      return (
-        "Cannot reach API. On a phone, open your PC LAN address from start_mobile_web.py "
-        "(for example http://192.168.1.10:8080), not 127.0.0.1."
-      );
-    }
-    return "Cannot reach API. Check that start_mobile_web.py is running and Windows Firewall allows the port.";
+    return formatFetchError({ message: "Failed to fetch" });
   }
 
   async function apiGet(path) {
     let response;
     try {
-      response = await fetch(apiPath(path), { cache: "no-store" });
+      response = await fetchWithTimeout(apiPath(path), { cache: "no-store" });
     } catch (error) {
-      throw new Error(connectionHelpMessage());
+      throw new Error(formatFetchError(error));
     }
     if (!response.ok) {
       throw new Error(`Request failed: ${response.status}`);
@@ -64,13 +164,16 @@
   async function apiPost(path, body) {
     let response;
     try {
-      response = await fetch(apiPath(path), {
+      response = await fetchWithTimeout(apiPath(path), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
     } catch (error) {
-      throw new Error(connectionHelpMessage());
+      throw new Error(formatFetchError(error));
+    }
+    if (!response.ok) {
+      throw new Error(`Request failed: ${response.status}`);
     }
     return response.json();
   }
@@ -88,7 +191,7 @@
       themeMeta.setAttribute("content", state.colors.app_bg || "#121212");
     }
     el.themeBtn.textContent = state.theme === "dark" ? "☀" : "☾";
-    localStorage.setItem(THEME_KEY, state.theme);
+    storage.set(THEME_KEY, state.theme);
   }
 
   async function loadTheme() {
@@ -144,10 +247,11 @@
     setActiveTab("dashboard");
     setSubtitle("Dashboard");
     el.backBtn.classList.add("hidden");
-    el.main.innerHTML = '<div class="empty-state">Loading dashboard...</div>';
+    const stopLoading = startLoadingProgress("Loading dashboard...");
 
     try {
       const payload = await apiGet("/api/dashboard");
+      stopLoading();
       state.dashboard = payload;
       if (!payload.success) {
         const source = payload.data_source ? ` (${payload.data_source})` : "";
@@ -184,7 +288,8 @@
         </section>
       `;
     } catch (error) {
-      el.main.innerHTML = `<div class="error-state">${error.message}</div>`;
+      stopLoading();
+      el.main.innerHTML = `<div class="error-state">${formatFetchError(error)}</div>`;
     }
   }
 
@@ -225,7 +330,7 @@
         button.addEventListener("click", () => openReport(button.dataset.slug, button.textContent));
       });
     } catch (error) {
-      el.main.innerHTML = `<div class="error-state">${error.message}</div>`;
+      el.main.innerHTML = `<div class="error-state">${formatFetchError(error)}</div>`;
     }
   }
 
@@ -346,7 +451,7 @@
       }
       resultRoot.innerHTML = renderResultTable(payload.rows || []);
     } catch (error) {
-      resultRoot.innerHTML = `<div class="error-state">${error.message}</div>`;
+      resultRoot.innerHTML = `<div class="error-state">${formatFetchError(error)}</div>`;
     }
   }
 
@@ -373,7 +478,7 @@
       `;
       document.getElementById("runReportBtn").addEventListener("click", () => runReport(slug));
     } catch (error) {
-      el.main.innerHTML = `<div class="error-state">${error.message}</div>`;
+      el.main.innerHTML = `<div class="error-state">${formatFetchError(error)}</div>`;
     }
   }
 
@@ -416,11 +521,14 @@
 
   async function boot() {
     bindEvents();
+    const stopLoading = startLoadingProgress("Connecting...");
     try {
       await loadTheme();
+      stopLoading();
       await renderDashboard();
     } catch (error) {
-      el.main.innerHTML = `<div class="error-state">${error.message}</div>`;
+      stopLoading();
+      el.main.innerHTML = `<div class="error-state">${formatFetchError(error)}</div>`;
     }
   }
 

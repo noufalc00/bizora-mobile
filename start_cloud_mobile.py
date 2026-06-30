@@ -26,8 +26,10 @@ load_dotenv()
 os.environ.setdefault("MOBILE_DATA_SOURCE", "supabase")
 
 render_url = (os.getenv("RENDER_EXTERNAL_URL") or "").strip()
+# Keep API calls relative on Render (same host). Absolute URLs can fail on some mobile browsers.
 if render_url and not (os.getenv("MOBILE_PUBLIC_URL") or "").strip():
-    os.environ["MOBILE_PUBLIC_URL"] = render_url.rstrip("/")
+    if (os.getenv("MOBILE_FORCE_RELATIVE_API") or "true").strip().lower() not in {"1", "true", "yes"}:
+        os.environ["MOBILE_PUBLIC_URL"] = render_url.rstrip("/")
 
 try:
     import uvicorn
@@ -42,7 +44,7 @@ def validate_cloud_credentials() -> None:
     from sync_service import get_supabase_client
 
     if get_supabase_client() is None:
-        print("WARNING: Supabase is not configured. Set SUPABASE_URL and SERVICE_KEY.")
+        print("WARNING: Supabase is not configured. Set SUPABASE_URL and SUPABASE_KEY.")
 
 
 def print_cloud_banner(port: int) -> None:
