@@ -480,17 +480,19 @@ button, input, select {
   border-radius: 0;
   padding: 10px 14px;
   background: var(--logo-stage-bg, var(--panel-bg));
-  touch-action: manipulation;
+  touch-action: none;
   user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
   cursor: pointer;
 }
 
 .login-logo-image {
   display: block;
   width: min(100%, 320px);
-  height: auto;
-  max-height: 120px;
-  object-fit: contain;
+  height: 96px;
+  background: url("/static/app_logo.png") center center / contain no-repeat;
+  pointer-events: none;
 }
 
 .secret-file-btn {

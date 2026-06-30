@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#121212">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <title>BIZORA Mobile</title>
-  <link rel="stylesheet" href="/static/mobile.css?v=1.6">
+  <link rel="stylesheet" href="/static/mobile.css?v=1.7">
 </head>
 <body>
   <div id="loginScreen" class="login-screen">
@@ -25,8 +25,8 @@
     <div class="login-body">
       <section class="login-card">
         <div class="login-logo-row">
-          <div id="loginLogoBox" class="login-logo-box" aria-label="Brand logo">
-            <img src="/static/app_logo.png" alt="BIZORA" class="login-logo-image">
+          <div id="loginLogoBox" class="login-logo-box" role="button" tabindex="0" aria-label="Brand logo">
+            <div class="login-logo-image" aria-hidden="true"></div>
           </div>
           <button id="secretFileBtn" class="secret-file-btn hidden" type="button" aria-label="Secret companies">
             <img src="/static/file.svg" alt="" class="secret-file-icon">
@@ -87,6 +87,6 @@
     </div>
   </div>
 
-  <script src="/static/mobile.js?v=1.6"></script>
+  <script src="/static/mobile.js?v=1.7"></script>
 </body>
 </html>

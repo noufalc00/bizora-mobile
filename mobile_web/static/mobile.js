@@ -4,6 +4,7 @@
   const THEME_KEY = "bizora_mobile_theme";
   const SESSION_KEY = "bizora_mobile_session";
   const LAST_NORMAL_COMPANY_KEY = "bizora_mobile_last_normal_company";
+  const LAST_NORMAL_COMPANY_DATA_KEY = "bizora_mobile_last_normal_company_data";
   const FETCH_TIMEOUT_MS = 60000;
   const LOGO_LONG_PRESS_MS = 800;
 
@@ -78,6 +79,9 @@
   function saveSession(session) {
     state.session = session;
     storage.set(SESSION_KEY, JSON.stringify(session || {}));
+    if (session && session.company_id && !session.is_secret) {
+      storage.set(LAST_NORMAL_COMPANY_KEY, String(session.company_id));
+    }
   }
 
   function clearSession() {
@@ -271,6 +275,86 @@
       return;
     }
     storage.set(LAST_NORMAL_COMPANY_KEY, String(company.id));
+    storage.set(
+      LAST_NORMAL_COMPANY_DATA_KEY,
+      JSON.stringify({
+        id: company.id,
+        business_name: company.business_name || "",
+        gstin: company.gstin || "",
+        phone_number: company.phone_number || "",
+        email: company.email || "",
+        state: company.state || "",
+        is_active: Boolean(company.is_active),
+        visibility: visibility,
+      }),
+    );
+  }
+
+  function readCachedNormalCompany(savedId) {
+    if (!savedId) {
+      return null;
+    }
+    try {
+      const raw = storage.get(LAST_NORMAL_COMPANY_DATA_KEY, "");
+      if (!raw) {
+        return null;
+      }
+      const cached = JSON.parse(raw);
+      if (cached && String(cached.id) === savedId) {
+        return cached;
+      }
+    } catch (error) {
+      return null;
+    }
+    return null;
+  }
+
+  async function resolveLastNormalCompany() {
+    const savedId = storage.get(LAST_NORMAL_COMPANY_KEY, "").trim();
+    if (!savedId) {
+      return null;
+    }
+    try {
+      const payload = await apiGet("/api/companies?visibility=normal");
+      if (payload.success) {
+        const match = (payload.companies || []).find(
+          (company) => String(company.id) === savedId,
+        );
+        if (match) {
+          saveLastNormalCompany(match);
+          return match;
+        }
+      }
+    } catch (error) {
+      /* Use cached snapshot when the company list request fails. */
+    }
+    return readCachedNormalCompany(savedId);
+  }
+
+  async function loadLoginBootstrap() {
+    let company = await resolveLastNormalCompany();
+    let usernames = ["admin"];
+
+    if (!company) {
+      const savedId = storage.get(LAST_NORMAL_COMPANY_KEY, "").trim();
+      const query = savedId ? `?last_company_id=${encodeURIComponent(savedId)}` : "";
+      const payload = await apiGet(`/api/auth/bootstrap${query}`);
+      company = payload.company || null;
+      usernames = payload.usernames || ["admin"];
+      if (company) {
+        saveLastNormalCompany(company);
+      }
+    }
+
+    state.selectedCompany = company;
+    state.isSecretSession = false;
+
+    if (company && company.id) {
+      await loadCompanyUsers(Number(company.id));
+    } else {
+      populateUsernameOptions(usernames);
+    }
+    refreshLoginCompanyDisplay();
   }
 
   function refreshTopbarCompany() {
@@ -379,26 +463,6 @@
     el.loginUsername.innerHTML = options;
   }
 
-  async function loadLoginBootstrap() {
-    const savedId = storage.get(LAST_NORMAL_COMPANY_KEY, "").trim();
-    const query = savedId ? `?last_company_id=${encodeURIComponent(savedId)}` : "";
-    const payload = await apiGet(`/api/auth/bootstrap${query}`);
-    if (payload.company) {
-      state.selectedCompany = payload.company;
-      state.isSecretSession = false;
-      saveLastNormalCompany(payload.company);
-    } else {
-      state.selectedCompany = null;
-      state.isSecretSession = false;
-    }
-    if (state.selectedCompany && state.selectedCompany.id) {
-      await loadCompanyUsers(Number(state.selectedCompany.id));
-    } else {
-      populateUsernameOptions(payload.usernames || []);
-    }
-    refreshLoginCompanyDisplay();
-  }
-
   async function loadCompanyUsers(companyId) {
     try {
       const payload = await apiGet(`/api/companies/${companyId}/users`);
@@ -483,8 +547,8 @@
         return;
       }
       saveSession(payload.session || null);
-      if (!state.isSecretSession && payload.company) {
-        saveLastNormalCompany(payload.company);
+      if (!state.isSecretSession) {
+        saveLastNormalCompany(payload.company || state.selectedCompany);
       }
       state.navigation = null;
       showAppShell();
@@ -524,7 +588,10 @@
       }
     };
 
-    const startPress = () => {
+    const startPress = (event) => {
+      if (event && event.cancelable) {
+        event.preventDefault();
+      }
       longPressTriggered = false;
       clearPress();
       pressTimer = window.setTimeout(() => {
@@ -539,12 +606,17 @@
       }
     };
 
+    el.loginLogoBox.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+    });
+
     el.loginLogoBox.addEventListener("dblclick", (event) => {
       event.preventDefault();
       closeSecretIfVisible();
     });
 
-    el.loginLogoBox.addEventListener("click", () => {
+    el.loginLogoBox.addEventListener("click", (event) => {
+      event.preventDefault();
       if (longPressTriggered) {
         longPressTriggered = false;
         return;
@@ -559,16 +631,30 @@
     });
 
     el.loginLogoBox.addEventListener("touchstart", (event) => {
-      if (event.target.closest(".login-logo-box")) {
-        startPress();
+      startPress(event);
+    }, { passive: false });
+
+    el.loginLogoBox.addEventListener("touchend", (event) => {
+      if (longPressTriggered && event.cancelable) {
+        event.preventDefault();
       }
-    }, { passive: true });
-    el.loginLogoBox.addEventListener("touchend", clearPress);
-    el.loginLogoBox.addEventListener("touchmove", clearPress);
+      clearPress();
+    }, { passive: false });
+
+    el.loginLogoBox.addEventListener("touchmove", (event) => {
+      if (event.cancelable) {
+        event.preventDefault();
+      }
+      clearPress();
+    }, { passive: false });
+
     el.loginLogoBox.addEventListener("touchcancel", clearPress);
     el.loginLogoBox.addEventListener("mousedown", startPress);
     el.loginLogoBox.addEventListener("mouseup", clearPress);
     el.loginLogoBox.addEventListener("mouseleave", clearPress);
+    el.loginLogoBox.addEventListener("dragstart", (event) => {
+      event.preventDefault();
+    });
   }
 
   async function renderLoginScreen() {
