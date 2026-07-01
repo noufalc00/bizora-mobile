@@ -651,6 +651,60 @@ class MobileSupabaseService:
 
         return rows
 
+    def _debug_dispatch_state(self, slug: str, resolved_id: Optional[int]) -> None:
+        """Emit a one-line snapshot of the fast-path decision inputs.
+
+        Prints the environment flags Render / uvicorn / gunicorn need to
+        see before the fast-path check runs, so we can tell from the log
+        alone whether the process actually has SUPABASE_URL, whether the
+        Supabase client could be constructed (SERVICE_ACTIVE), which
+        MOBILE_DATA_SOURCE is selected, and whether the slug is mapped
+        to a fast-path RPC at all.
+
+        Note on `SERVICE_ACTIVE`:
+            `get_supabase_client()` caches the client at module scope so
+            an env var that got unset AFTER the first call still shows
+            the client as available. We compute SERVICE_ACTIVE from a
+            fresh env read here so the log reflects the CURRENT env
+            variables on the worker, not the ones present at boot.
+        """
+        import os
+
+        from bizora_core.mobile_supabase_fast_reports import FAST_PATH_HANDLERS
+
+        supabase_url_set = bool((os.environ.get("SUPABASE_URL") or "").strip())
+        service_key_set = bool(
+            (os.environ.get("SERVICE_KEY") or "").strip()
+            or (os.environ.get("SUPABASE_SERVICE_KEY") or "").strip()
+            or (os.environ.get("SUPABASE_KEY") or "").strip()
+        )
+        data_source_env = (os.environ.get("MOBILE_DATA_SOURCE") or "").lower() or "(unset)"
+        is_service_active = supabase_url_set and service_key_set
+
+        # Separate probe: is the cached / lazily-constructed client
+        # currently usable? A False here with SERVICE_ACTIVE=True means
+        # env is present but the client itself failed (e.g. URL malformed,
+        # supabase package missing, network refused at construction).
+        try:
+            client_ok = self._client() is not None
+            client_error = ""
+        except Exception as exc:
+            client_ok = False
+            client_error = f" client_error={type(exc).__name__}: {exc}"
+
+        slug_on_fast_path = slug in FAST_PATH_HANDLERS
+
+        print(
+            f"DEBUG: Fast-Path Check -> "
+            f"SUPABASE_URL_SET: {supabase_url_set}, "
+            f"SERVICE_ACTIVE: {is_service_active}"
+            f" | slug='{slug}' company_id={resolved_id} "
+            f"MOBILE_DATA_SOURCE={data_source_env} "
+            f"SERVICE_KEY_SET={service_key_set} "
+            f"CLIENT_OK={client_ok} "
+            f"slug_on_fast_path={slug_on_fast_path}{client_error}"
+        )
+
     def run_report(
         self,
         slug: str,
@@ -666,13 +720,21 @@ class MobileSupabaseService:
         Every fast-path miss is logged with the exception class and a
         category tag (see `mobile_supabase_fast_reports._classify_rpc_error`)
         so we can see whether the fallback happened because the RPC was
-        missing, timed out, was unauthorized, or genuinely errored.
+        missing, timed out, was unauthorized, or genuinely errored. The
+        one-line dispatch snapshot printed at the top of every call also
+        exposes the environment (`SUPABASE_URL_SET`, `SERVICE_ACTIVE`,
+        `MOBILE_DATA_SOURCE`) so we can distinguish "wrong env in the
+        deployed process" from "RPC unavailable" without redeploying.
         """
         definition = get_route_definition(slug)
         if definition is None:
             return {"success": False, "message": f"Unknown route: {slug}", "rows": []}
 
         resolved_id = self.resolve_company_id(company_id)
+
+        # Diagnostic snapshot for Render / uvicorn logs. Cheap - one line.
+        self._debug_dispatch_state(slug, resolved_id)
+
         if resolved_id is not None:
             from bizora_core.mobile_supabase_fast_reports import (
                 FAST_PATH_HANDLERS,
@@ -688,14 +750,21 @@ class MobileSupabaseService:
             if fast_result is not None:
                 return fast_result
 
-            # Only complain about a fast-path miss when the slug is
-            # actually mapped - unmapped slugs go straight to the bridge
-            # by design and should not spam the logs.
-            if slug in FAST_PATH_HANDLERS:
-                print(
-                    f"[MOBILE-SUPABASE] Fast-path miss for slug='{slug}' company={resolved_id}; "
-                    f"falling back to SQLite hydration bridge. See preceding FAST-PATH lines for cause."
-                )
+            # Categorize why the fast path returned None so the follow-up
+            # bridge log carries an actionable reason instead of a generic
+            # "skipped" tag. Grep `bridge_reason=` in the deployed logs
+            # to see the distribution at a glance.
+            if slug not in FAST_PATH_HANDLERS:
+                bridge_reason = "SLUG_NOT_MAPPED"
+            else:
+                bridge_reason = "RPC_FAILED_OR_MISSING"
+        else:
+            bridge_reason = "NO_COMPANY_ID"
+
+        print(
+            f"DEBUG: Falling back to Bridge because Fast-Path was skipped or not enabled. "
+            f"bridge_reason={bridge_reason} slug='{slug}' company_id={resolved_id}"
+        )
 
         from bizora_core.mobile_supabase_desktop_bridge import run_report_via_desktop_bridge
 
