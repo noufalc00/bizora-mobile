@@ -11,8 +11,54 @@ from contextlib import closing
 from threading import Lock
 from typing import Any, Callable
 
-from db import Database
-from bizora_core.mobile_web_service import MobileWebService
+# NOTE: `db` is a desktop-only SQLite module. It ships with the PySide6
+# installer but is intentionally absent from the mobile web deployment
+# image, so importing it at module load time crashes the FastAPI server
+# on cold start. The import is deferred until we actually need to build
+# the hydration SQLite snapshot, and every call site is guarded so a
+# missing module degrades gracefully into a bridge-unavailable response
+# instead of tearing down the whole worker.
+#
+# Same rationale applies to MobileWebService, which transitively imports
+# `db` and other desktop modules.
+_DesktopDatabase: Any = None
+_MobileWebServiceCls: Any = None
+
+
+def _load_desktop_layer() -> tuple[Any, Any]:
+    """Lazy-import the desktop DB + service classes.
+
+    Returns:
+        (Database class, MobileWebService class)
+
+    Raises:
+        ImportError: caller is responsible for translating this into a
+        user-friendly `success=False` payload so callers cannot crash
+        the request handler.
+    """
+    global _DesktopDatabase, _MobileWebServiceCls
+    if _DesktopDatabase is not None and _MobileWebServiceCls is not None:
+        return _DesktopDatabase, _MobileWebServiceCls
+
+    try:
+        from db import Database as _Database
+    except ImportError as exc:
+        raise ImportError(
+            "desktop `db` module unavailable in this environment; "
+            "the Supabase bridge cannot hydrate an in-memory SQLite snapshot"
+        ) from exc
+
+    try:
+        from bizora_core.mobile_web_service import MobileWebService as _MobileWebService
+    except ImportError as exc:
+        raise ImportError(
+            "bizora_core.mobile_web_service unavailable; "
+            "desktop report handlers cannot execute"
+        ) from exc
+
+    _DesktopDatabase = _Database
+    _MobileWebServiceCls = _MobileWebService
+    return _DesktopDatabase, _MobileWebServiceCls
 
 # Parent tables first, then child/item tables (matches sync_bulk_to_supabase.py).
 HYDRATION_TABLES: tuple[str, ...] = (
@@ -53,7 +99,8 @@ CHILD_TABLE_PARENT: dict[str, tuple[str, str, str]] = {
 GLOBAL_TABLES = frozenset({"cash_tender_history"})
 
 _CACHE_LOCK = Lock()
-_DB_CACHE: dict[int, tuple[float, str, Database]] = {}
+# Any = desktop Database class; forward-ref intentionally, see _load_desktop_layer.
+_DB_CACHE: dict[int, tuple[float, str, Any]] = {}
 _CACHE_TTL_SECONDS = 180
 
 
@@ -169,13 +216,20 @@ def _insert_rows(connection, table_name: str, rows: list[dict[str, Any]]) -> Non
         connection.commit()
 
 
-def build_desktop_database(service: Any, company_id: int) -> tuple[Database, str]:
-    """Create a temporary SQLite file populated with one company's synced data."""
+def build_desktop_database(service: Any, company_id: int) -> tuple[Any, str]:
+    """Create a temporary SQLite file populated with one company's synced data.
+
+    Raises ImportError when the desktop `db` module isn't packaged with
+    this deployment (e.g. cloud FastAPI worker). Callers must translate
+    that into a graceful `success=False` payload rather than propagating.
+    """
+    database_cls, _mobile_web_service_cls = _load_desktop_layer()
+
     temp_file = tempfile.NamedTemporaryFile(prefix=f"mobile_co_{company_id}_", suffix=".db", delete=False)
     temp_path = temp_file.name
     temp_file.close()
 
-    db = Database(db_path=temp_path)
+    db = database_cls(db_path=temp_path)
     connection = db.connect()
     hydrated: dict[str, list[dict[str, Any]]] = {}
 
@@ -186,7 +240,7 @@ def build_desktop_database(service: Any, company_id: int) -> tuple[Database, str
     return db, temp_path
 
 
-def _get_cached_database(service: Any, company_id: int) -> tuple[Database, str]:
+def _get_cached_database(service: Any, company_id: int) -> tuple[Any, str]:
     """Reuse a recently built SQLite snapshot for the same company."""
     now = time.time()
     with _CACHE_LOCK:
@@ -214,14 +268,57 @@ def run_report_via_desktop_bridge(
     filters: dict[str, Any],
     company_id: int | None,
 ) -> dict[str, Any]:
-    """Run any Books/Reports route through the same logic layer as the desktop app."""
+    """Run any Books/Reports route through the same logic layer as the desktop app.
+
+    Falls back to a `success=False` payload (never raises) so a missing
+    desktop `db` module in the cloud deployment cannot crash the request
+    handler. Callers should surface `message` to the user and pursue the
+    fast-path RPCs (see `mobile_supabase_fast_reports`) as the primary
+    reporting route in cloud environments.
+    """
     resolved_id = supabase_service.resolve_company_id(company_id)
     if not resolved_id:
         return {"success": False, "message": "No company found in Supabase.", "rows": []}
 
-    db, _path = _get_cached_database(supabase_service, resolved_id)
     try:
-        result = MobileWebService(db=db).run_report(slug, filters, company_id=resolved_id)
+        database_cls, mobile_web_service_cls = _load_desktop_layer()
+    except ImportError as exc:
+        # Cloud deployment without the desktop `db` module. Log once and
+        # return a graceful payload so the server stays up.
+        print(f"[MOBILE-BRIDGE] Desktop layer unavailable ({exc}); "
+              f"report '{slug}' cannot use SQLite hydration bridge.")
+        return {
+            "success": False,
+            "message": (
+                "The SQLite hydration bridge is disabled on this deployment. "
+                "Enable the desktop 'db' module or use the fast-path RPCs."
+            ),
+            "rows": [],
+            "data_source": "supabase",
+            "bridge_available": False,
+        }
+
+    try:
+        db, _path = _get_cached_database(supabase_service, resolved_id)
+    except ImportError as exc:
+        # Belt-and-braces: a later ImportError in _load_desktop_layer.
+        print(f"[MOBILE-BRIDGE] Cache build failed for company {resolved_id}: {exc}")
+        return {
+            "success": False,
+            "message": str(exc),
+            "rows": [],
+            "data_source": "supabase",
+            "bridge_available": False,
+        }
+    except Exception as exc:
+        # Non-import failures (network, permission, disk) still need to
+        # be caught so we don't crash the worker.
+        print(f"[MOBILE-BRIDGE] Cache build failed for company {resolved_id}: {exc}")
+        return {"success": False, "message": str(exc), "rows": [], "data_source": "supabase"}
+
+    try:
+        _ = database_cls  # silence unused-linter; class captured above so we validate the import
+        result = mobile_web_service_cls(db=db).run_report(slug, filters, company_id=resolved_id)
         result["data_source"] = "supabase"
         return result
     except Exception as exc:
