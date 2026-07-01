@@ -657,51 +657,27 @@ class MobileSupabaseService:
         filters: Optional[dict[str, Any]] = None,
         company_id: Optional[int] = None,
     ) -> dict[str, Any]:
-        """Run a cloud report from synced Supabase tables."""
+        """Run a cloud report using desktop logic on synced Supabase data."""
         definition = get_route_definition(slug)
         if definition is None:
             return {"success": False, "message": f"Unknown route: {slug}", "rows": []}
 
         resolved_id = self.resolve_company_id(company_id)
-        if not resolved_id:
-            return {"success": False, "message": "No company found in Supabase.", "rows": []}
+        if resolved_id is not None:
+            from bizora_core.mobile_supabase_fast_reports import try_run_fast_report
 
-        filters = filters or {}
-
-        if definition.get("handler") == "voucher_book":
-            from bizora_core.mobile_supabase_voucher_reports import run_voucher_book_report
-
-            return run_voucher_book_report(
-                self._fetch_table,
-                self._client(),
+            fast_result = try_run_fast_report(
+                self._client,
                 slug,
                 resolved_id,
-                filters,
+                filters or {},
             )
+            if fast_result is not None:
+                return fast_result
 
-        from bizora_core.mobile_supabase_report_handlers import run_cloud_handler_report
+        from bizora_core.mobile_supabase_desktop_bridge import run_report_via_desktop_bridge
 
-        handler_name = definition.get("handler") or ""
-        cloud_result = run_cloud_handler_report(
-            handler_name,
-            slug,
-            self._fetch_table,
-            resolved_id,
-            filters,
-        )
-        if cloud_result is not None:
-            return cloud_result
-
-        return {
-            "success": False,
-            "message": (
-                f"'{definition.get('title', slug)}' is not available in cloud mode yet. "
-                "Run the desktop app with sync, or use local mode: python start_mobile_web.py"
-            ),
-            "rows": [],
-            "columns": [],
-            "data_source": "supabase",
-        }
+        return run_report_via_desktop_bridge(self, slug, filters or {}, company_id)
 
     @staticmethod
     def _empty_metrics_fallback() -> dict[str, float]:

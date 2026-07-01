@@ -398,6 +398,13 @@ button, input, select {
   font-weight: 700;
 }
 
+.data-table tr.row-section td {
+  background: rgba(59, 130, 246, 0.12);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
 .data-table th,
 .data-table td {
   padding: 8px 10px;

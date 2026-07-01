@@ -1077,6 +1077,47 @@
     return items ? `<section class="day-book-summary">${items}</section>` : "";
   }
 
+  function reportRowClass(row, slug) {
+    const rowType = String(row.row_type || row.entry_type || "").toLowerCase();
+    if (rowType === "opening") {
+      return "row-opening";
+    }
+    if (rowType === "total") {
+      return "row-total";
+    }
+    if (rowType === "closing_balance") {
+      return "row-closing";
+    }
+    if (rowType === "section") {
+      return "row-section";
+    }
+    if (slug === "day-book") {
+      return dayBookRowClass(row);
+    }
+    return "";
+  }
+
+  function renderReportSummary(summary, labels) {
+    if (!summary || !Object.keys(summary).length) {
+      return "";
+    }
+    const items = Object.keys(summary)
+      .filter((key) => summary[key] != null && summary[key] !== "")
+      .map((key) => {
+        const label = (labels && labels[key]) || key.replace(/_/g, " ");
+        const value = summary[key];
+        const display = Number.isNaN(Number(value)) ? value : formatMoney(value);
+        return `
+          <div class="day-book-summary-item">
+            <span>${label}</span>
+            <strong>${display}</strong>
+          </div>
+        `;
+      })
+      .join("");
+    return items ? `<section class="day-book-summary">${items}</section>` : "";
+  }
+
   function dayBookRowClass(row) {
     const rowType = String(row.row_type || row.entry_type || "").toLowerCase();
     if (rowType === "opening") {
@@ -1140,7 +1181,7 @@
     let previousDate = "";
     const body = rows
       .map((row, rowIndex) => {
-        const rowClass = opts.slug === "day-book" ? dayBookRowClass(row) : "";
+        const rowClass = reportRowClass(row, opts.slug);
         const cells = columns
           .map((column) => {
             const numClass = isNumericColumn(column.key) ? " num" : "";
@@ -1177,7 +1218,7 @@
 
     const summaryHtml = opts.slug === "day-book"
       ? renderDayBookSummary(opts.summary, opts.summaryLabels)
-      : "";
+      : renderReportSummary(opts.summary, opts.summaryLabels);
 
     return `
       ${summaryHtml}

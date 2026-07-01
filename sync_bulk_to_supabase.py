@@ -119,6 +119,23 @@ SYNC_PLAN: tuple[tuple[str, str, str], ...] = (
         "SELECT * FROM stock_movements WHERE company_id IN ({company_ids})",
         "id",
     ),
+    (
+        "journal_vouchers",
+        "SELECT * FROM journal_vouchers WHERE company_id IN ({company_ids})",
+        "id",
+    ),
+    (
+        "journal_voucher_lines",
+        "SELECT jvl.* FROM journal_voucher_lines jvl "
+        "INNER JOIN journal_vouchers jv ON jv.id = jvl.journal_id "
+        "WHERE jv.company_id IN ({company_ids})",
+        "id",
+    ),
+    (
+        "cash_tender_history",
+        "SELECT * FROM cash_tender_history",
+        "id",
+    ),
 )
 
 
@@ -173,6 +190,8 @@ def bulk_sync_to_supabase(company_id: Optional[int] = None) -> bool:
         if table_name == "companies":
             query = query_template.format(company_filter=company_filter)
             rows = _fetch_rows(db_path, query, params)
+        elif "{company_ids}" not in query_template:
+            rows = _fetch_rows(db_path, query_template)
         else:
             query = query_template.format(company_ids=company_ids_sql)
             rows = _fetch_rows(db_path, query, tuple(company_ids))

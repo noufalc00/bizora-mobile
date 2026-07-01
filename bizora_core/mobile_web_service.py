@@ -399,24 +399,153 @@ class MobileWebService:
         engine = FinancialReportingEngine(self.db)
         from_dt = date.fromisoformat(self._parse_date(filters.get("from_date")))
         to_dt = date.fromisoformat(self._parse_date(filters.get("to_date")))
-        result = engine.generate_profit_and_loss(company_id, from_dt, to_dt)
+        result = engine.generate_profit_and_loss(company_id, from_dt, to_dt) or {}
         rows: list[dict[str, Any]] = []
-        if isinstance(result, dict):
-            for side in ("income_rows", "expense_rows"):
-                rows.extend(result.get(side, []) or [])
-        return {"success": True, "message": "", "rows": rows, "meta": result}
+
+        def append_row(left_label: str, left_amount: float, right_label: str, right_amount: float, row_type: str = "") -> None:
+            rows.append(
+                {
+                    "left_particulars": left_label,
+                    "left_amount": left_amount or "",
+                    "right_particulars": right_label,
+                    "right_amount": right_amount or "",
+                    "row_type": row_type,
+                }
+            )
+
+        rows.append({"left_particulars": "TRADING ACCOUNT", "left_amount": "", "right_particulars": "", "right_amount": "", "row_type": "section"})
+        left_rows = [(f"To {acc['account_name']}", acc['balance']) for acc in result.get("direct_expenses", [])]
+        left_total = float(result.get("total_direct_expenses", 0) or 0)
+        right_rows = [(f"By {acc['account_name']}", acc['balance']) for acc in result.get("direct_incomes", [])]
+        right_total = float(result.get("total_direct_incomes", 0) or 0)
+        gross_profit = float(result.get("gross_profit", 0) or 0)
+        if gross_profit >= 0:
+            left_rows.append(("To Gross Profit c/d", gross_profit))
+            left_total += gross_profit
+        else:
+            right_rows.append(("By Gross Loss c/d", abs(gross_profit)))
+            right_total += abs(gross_profit)
+        final_total = max(left_total, right_total)
+        for i in range(max(len(left_rows), len(right_rows))):
+            ll, la = left_rows[i] if i < len(left_rows) else ("", 0)
+            rl, ra = right_rows[i] if i < len(right_rows) else ("", 0)
+            append_row(ll, la, rl, ra)
+        append_row("Total", final_total, "Total", final_total, "total")
+
+        rows.append({"left_particulars": "PROFIT & LOSS ACCOUNT", "left_amount": "", "right_particulars": "", "right_amount": "", "row_type": "section"})
+        left_rows = [(f"To {acc['account_name']}", acc['balance']) for acc in result.get("indirect_expenses", [])]
+        left_total = float(result.get("total_indirect_expenses", 0) or 0)
+        if gross_profit >= 0:
+            right_rows = [("By Gross Profit b/d", gross_profit)]
+            right_total = gross_profit
+        else:
+            left_rows.append(("To Gross Loss b/d", abs(gross_profit)))
+            left_total += abs(gross_profit)
+            right_rows = []
+            right_total = 0.0
+        for acc in result.get("indirect_incomes", []):
+            right_rows.append((f"By {acc['account_name']}", acc['balance']))
+        right_total += float(result.get("total_indirect_incomes", 0) or 0)
+        net_profit = float(result.get("net_profit", 0) or 0)
+        if net_profit >= 0:
+            left_rows.append(("To Net Profit", net_profit))
+            left_total += net_profit
+        else:
+            right_rows.append(("By Net Loss", abs(net_profit)))
+            right_total += abs(net_profit)
+        final_total = max(left_total, right_total)
+        for i in range(max(len(left_rows), len(right_rows))):
+            ll, la = left_rows[i] if i < len(left_rows) else ("", 0)
+            rl, ra = right_rows[i] if i < len(right_rows) else ("", 0)
+            append_row(ll, la, rl, ra)
+        append_row("Total", final_total, "Total", final_total, "total")
+
+        summary = {
+            "gross_profit": gross_profit,
+            "net_profit": net_profit,
+            "total_direct_incomes": result.get("total_direct_incomes", 0),
+            "total_direct_expenses": result.get("total_direct_expenses", 0),
+            "total_indirect_incomes": result.get("total_indirect_incomes", 0),
+            "total_indirect_expenses": result.get("total_indirect_expenses", 0),
+        }
+        return {
+            "success": True,
+            "message": "",
+            "rows": rows,
+            "meta": result,
+            "summary": summary,
+            "summary_labels": {
+                "gross_profit": "Gross Profit",
+                "net_profit": "Net Profit",
+                "total_direct_incomes": "Direct Incomes",
+                "total_direct_expenses": "Direct Expenses",
+                "total_indirect_incomes": "Indirect Incomes",
+                "total_indirect_expenses": "Indirect Expenses",
+            },
+        }
 
     def _run_balance_sheet(self, company_id: int, _definition: dict[str, Any], filters: dict[str, Any]) -> dict[str, Any]:
         from bizora_core.financial_reporting_engine import FinancialReportingEngine
 
         engine = FinancialReportingEngine(self.db)
-        as_of = date.fromisoformat(self._parse_date(filters.get("as_of_date")))
-        result = engine.generate_balance_sheet(company_id, as_of)
+        as_of = date.fromisoformat(self._parse_date(filters.get("as_of_date") or filters.get("to_date")))
+        result = engine.generate_balance_sheet(company_id, as_of) or {}
+
+        left_rows: list[tuple[str, float]] = []
+        for acc in result.get("capital_accounts", []) or []:
+            left_rows.append((acc.get("account_name", ""), float(acc.get("balance") or 0)))
+        net_profit = float(result.get("net_profit", 0) or 0)
+        if net_profit >= 0:
+            left_rows.append(("Add: Net Profit", net_profit))
+        else:
+            left_rows.append(("Less: Net Loss", abs(net_profit)))
+        for acc in result.get("current_liabilities", []) or []:
+            left_rows.append((acc.get("account_name", ""), float(acc.get("balance") or 0)))
+
+        right_rows: list[tuple[str, float]] = []
+        for acc in result.get("fixed_assets", []) or []:
+            right_rows.append((acc.get("account_name", ""), float(acc.get("balance") or 0)))
+        for acc in result.get("current_assets", []) or []:
+            right_rows.append((acc.get("account_name", ""), float(acc.get("balance") or 0)))
+
+        left_total = abs(float(result.get("adjusted_capital", 0) or 0) + float(result.get("total_liabilities", 0) or 0))
+        right_total = abs(float(result.get("total_assets", 0) or 0))
+        left_rows.append(("Total", left_total))
+        right_rows.append(("Total", right_total))
+
         rows: list[dict[str, Any]] = []
-        if isinstance(result, dict):
-            for side in ("assets", "liabilities"):
-                rows.extend(result.get(side, []) or [])
-        return {"success": True, "message": "", "rows": rows, "meta": result}
+        for i in range(max(len(left_rows), len(right_rows))):
+            ll, la = left_rows[i] if i < len(left_rows) else ("", 0)
+            rl, ra = right_rows[i] if i < len(right_rows) else ("", 0)
+            row_type = "total" if (ll == "Total" or rl == "Total") else ""
+            rows.append(
+                {
+                    "left_particulars": ll,
+                    "left_amount": la or "",
+                    "right_particulars": rl,
+                    "right_amount": ra or "",
+                    "row_type": row_type,
+                }
+            )
+
+        return {
+            "success": True,
+            "message": "",
+            "rows": rows,
+            "meta": result,
+            "summary": {
+                "net_profit": net_profit,
+                "total_assets": result.get("total_assets", 0),
+                "total_liabilities": result.get("total_liabilities", 0),
+                "adjusted_capital": result.get("adjusted_capital", 0),
+            },
+            "summary_labels": {
+                "net_profit": "Net Profit",
+                "total_assets": "Total Assets",
+                "total_liabilities": "Total Liabilities",
+                "adjusted_capital": "Adjusted Capital",
+            },
+        }
 
     def _run_stock_report(self, company_id: int, _definition: dict[str, Any], filters: dict[str, Any]) -> dict[str, Any]:
         from bizora_core.stock_report_logic import StockReportLogic
@@ -439,20 +568,46 @@ class MobileWebService:
         from bizora_core.gstr1_logic import GSTR1Logic
 
         logic = GSTR1Logic(self.db)
-        result = logic.generate_gstr1_report(
+        report = logic.generate_gstr1_report(
             company_id,
             self._parse_date(filters.get("from_date")),
             self._parse_date(filters.get("to_date")),
         )
-        rows = result.get("data", []) if isinstance(result, dict) else []
-        return {"success": bool(result.get("success", True)), "message": result.get("message", ""), "rows": rows}
+        rows = []
+        for item in report.get("hsn", []) if isinstance(report, dict) else []:
+            rows.append(
+                {
+                    "hsn": item.get("hsn", ""),
+                    "description": item.get("desc", ""),
+                    "uqc": item.get("uqc", ""),
+                    "quantity": item.get("qty", 0),
+                    "taxable_amount": item.get("val", 0),
+                    "igst_amount": item.get("iamt", 0),
+                    "cgst_amount": item.get("camt", 0),
+                    "sgst_amount": item.get("samt", 0),
+                    "cess_amount": item.get("csamt", 0),
+                    "tax_percent": item.get("rt", 0),
+                }
+            )
+        return {
+            "success": True,
+            "message": "",
+            "rows": rows,
+            "meta": report if isinstance(report, dict) else {},
+        }
 
     def _run_monthly_analysis(self, company_id: int, _definition: dict[str, Any], filters: dict[str, Any]) -> dict[str, Any]:
         from bizora_core.monthly_analysis_logic import MonthlyAnalysisLogic
         from utils.financial_year import get_working_financial_year_label
 
         logic = MonthlyAnalysisLogic(self.db)
-        fy = str(filters.get("financial_year") or get_working_financial_year_label() or "")
+        fy = str(filters.get("financial_year") or "").strip()
+        if not fy:
+            fy = get_working_financial_year_label() or ""
+        if not fy:
+            today = date.today()
+            start_year = today.year if today.month >= 4 else today.year - 1
+            fy = f"{start_year}-{str(start_year + 1)[-2:]}"
         from_month = str(filters.get("from_month") or "April")
         to_month = str(filters.get("to_month") or "March")
         start_date, end_date = logic.get_financial_year_range(fy, from_month, to_month)
@@ -463,7 +618,13 @@ class MobileWebService:
             from_month=from_month,
             to_month=to_month,
         )
-        return self._rows_from_logic_result(result)
+        payload = self._rows_from_logic_result(result)
+        rows = payload.get("rows") or []
+        for row in rows:
+            if row.get("month_name") and not row.get("month_label"):
+                row["month_label"] = f"{row.get('month_name')} {row.get('year', '')}".strip()
+        payload["rows"] = rows
+        return payload
 
     def _run_journal_book(self, company_id: int, _definition: dict[str, Any], filters: dict[str, Any]) -> dict[str, Any]:
         from bizora_core.journal_book_logic import JournalBookLogic
@@ -535,7 +696,17 @@ class MobileWebService:
         from bizora_core.sales_profit_book_logic import SalesProfitBookLogic
 
         logic = SalesProfitBookLogic(self.db)
-        result = logic.get_bill_wise(
+        mode_label = str(filters.get("report_mode") or "Bill Wise Profit")
+        method_map = {
+            "Bill Wise Profit": "get_bill_wise",
+            "Party Wise Profit": "get_party_wise",
+            "Item Wise Profit": "get_item_wise",
+        }
+        method_name = method_map.get(mode_label, "get_bill_wise")
+        method = getattr(logic, method_name, None)
+        if method is None:
+            return {"success": False, "message": f"Missing method {method_name}", "rows": []}
+        result = method(
             company_id,
             self._parse_date(filters.get("from_date")),
             self._parse_date(filters.get("to_date")),
@@ -548,13 +719,11 @@ class MobileWebService:
         query = f"""
             SELECT bill_no, bill_amount, cash_received, balance_returned, payment_mode, created_at
             FROM cash_tender_history
-            WHERE company_id = {ph}
-              AND DATE(created_at) >= DATE({ph})
+            WHERE DATE(created_at) >= DATE({ph})
               AND DATE(created_at) <= DATE({ph})
             ORDER BY created_at DESC
         """
         params = (
-            company_id,
             self._parse_date(filters.get("from_date")),
             self._parse_date(filters.get("to_date")),
         )
@@ -609,7 +778,20 @@ class MobileWebService:
             LIMIT 500
         """
         rows = self.db.execute_query(query, tuple(params)) or []
-        return {"success": True, "message": "", "rows": rows}
+        shaped = []
+        for row in rows:
+            shaped.append(
+                {
+                    "item_code": row.get("barcode", ""),
+                    "product_name": row.get("name", ""),
+                    "current_stock": row.get("quantity", 0),
+                    "purchase_rate": row.get("purchase_rate", 0),
+                    "sales_rate": row.get("sale_price", 0),
+                    "wholesale_rate": row.get("wholesale_rate", 0),
+                    "mrp": row.get("mrp", 0),
+                }
+            )
+        return {"success": True, "message": "", "rows": shaped}
 
     def _run_gst_sales_report(self, company_id: int, _definition: dict[str, Any], filters: dict[str, Any]) -> dict[str, Any]:
         return self._run_voucher_book(
@@ -628,13 +810,17 @@ class MobileWebService:
     def _run_daily_collection(self, company_id: int, _definition: dict[str, Any], filters: dict[str, Any]) -> dict[str, Any]:
         ph = self.db._get_placeholder()
         query = f"""
-            SELECT invoice_date, invoice_number, party_id, grand_total, amount_received, payment_mode
-            FROM sales
-            WHERE company_id = {ph}
-              AND DATE(invoice_date) >= DATE({ph})
-              AND DATE(invoice_date) <= DATE({ph})
-              AND COALESCE(amount_received, 0) > 0
-            ORDER BY invoice_date DESC, invoice_number DESC
+            SELECT s.invoice_date AS collection_date,
+                   COALESCE(p.name, 'Cash Customer') AS party_name,
+                   s.amount_received AS amount,
+                   s.payment_mode
+            FROM sales s
+            LEFT JOIN parties p ON p.id = s.party_id
+            WHERE s.company_id = {ph}
+              AND DATE(s.invoice_date) >= DATE({ph})
+              AND DATE(s.invoice_date) <= DATE({ph})
+              AND COALESCE(s.amount_received, 0) > 0
+            ORDER BY s.invoice_date DESC, s.invoice_number DESC
         """
         rows = self.db.execute_query(
             query,
@@ -660,8 +846,8 @@ class MobileWebService:
         ph = self.db._get_placeholder()
         query = f"""
             SELECT p.name AS product_name,
-                   SUM(COALESCE(si.quantity, 0)) AS total_qty,
-                   SUM(COALESCE(si.grand_total, 0)) AS total_amount
+                   SUM(COALESCE(si.quantity, 0)) AS quantity_sold,
+                   SUM(COALESCE(si.grand_total, 0)) AS revenue
             FROM sales_items si
             INNER JOIN sales s ON s.id = si.sale_id
             INNER JOIN products p ON p.id = si.product_id
@@ -669,7 +855,7 @@ class MobileWebService:
               AND DATE(s.invoice_date) >= DATE({ph})
               AND DATE(s.invoice_date) <= DATE({ph})
             GROUP BY p.id, p.name
-            ORDER BY total_qty DESC
+            ORDER BY quantity_sold DESC
             LIMIT 100
         """
         rows = self.db.execute_query(
@@ -680,20 +866,22 @@ class MobileWebService:
                 self._parse_date(filters.get("to_date")),
             ),
         ) or []
+        for index, row in enumerate(rows, start=1):
+            row["rank"] = index
         return {"success": True, "message": "", "rows": rows}
 
     def _run_salesman_book(self, company_id: int, _definition: dict[str, Any], filters: dict[str, Any]) -> dict[str, Any]:
         ph = self.db._get_placeholder()
         query = f"""
-            SELECT COALESCE(salesman, 'Unassigned') AS salesman,
+            SELECT COALESCE(salesman, 'Unassigned') AS salesman_name,
                    COUNT(*) AS bill_count,
-                   SUM(COALESCE(grand_total, 0)) AS total_sales
+                   SUM(COALESCE(grand_total, 0)) AS net_sales
             FROM sales
             WHERE company_id = {ph}
               AND DATE(invoice_date) >= DATE({ph})
               AND DATE(invoice_date) <= DATE({ph})
             GROUP BY COALESCE(salesman, 'Unassigned')
-            ORDER BY total_sales DESC
+            ORDER BY net_sales DESC
         """
         rows = self.db.execute_query(
             query,
@@ -703,4 +891,8 @@ class MobileWebService:
                 self._parse_date(filters.get("to_date")),
             ),
         ) or []
+        for row in rows:
+            bill_count = float(row.get("bill_count") or 0)
+            net_sales = float(row.get("net_sales") or 0)
+            row["avg_bill_value"] = round(net_sales / bill_count, 2) if bill_count else 0.0
         return {"success": True, "message": "", "rows": rows}

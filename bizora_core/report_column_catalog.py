@@ -147,6 +147,13 @@ def normalize_report_mode(mode: str | None) -> str:
     return MODE_LABEL_ALIASES.get(label, label)
 
 
+def columns_for_profit_mode(mode: str | None) -> list[dict[str, str]]:
+    """Return ordered column metadata for Sales Wise Profit modes."""
+    label = str(mode or "Bill Wise Profit").strip()
+    pairs = VOUCHER_REPORT_COLUMNS.get(label) or VOUCHER_REPORT_COLUMNS["Bill Wise Profit"]
+    return [{"label": label_key, "key": data_key} for label_key, data_key in pairs]
+
+
 def columns_for_voucher_mode(mode: str | None) -> list[dict[str, str]]:
     """Return ordered column metadata for one voucher book mode."""
     key = normalize_report_mode(mode)

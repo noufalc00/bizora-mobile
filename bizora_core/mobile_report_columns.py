@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from bizora_core.report_column_catalog import columns_for_voucher_mode
+from bizora_core.report_column_catalog import columns_for_voucher_mode, columns_for_profit_mode
 
 # (label, row key) pairs — mirrors desktop report table headers.
 SLUG_REPORT_COLUMNS: dict[str, list[tuple[str, str]]] = {
@@ -64,12 +64,16 @@ SLUG_REPORT_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("Closing Credit", "closing_credit"),
     ],
     "profit-and-loss-account": [
-        ("Particulars", "particulars"),
-        ("Amount", "amount"),
+        ("Particulars (Dr)", "left_particulars"),
+        ("Amount (Dr)", "left_amount"),
+        ("Particulars (Cr)", "right_particulars"),
+        ("Amount (Cr)", "right_amount"),
     ],
     "balance-sheet": [
-        ("Particulars", "particulars"),
-        ("Amount", "amount"),
+        ("Liabilities", "left_particulars"),
+        ("Amount (₹)", "left_amount"),
+        ("Assets", "right_particulars"),
+        ("Amount (₹)", "right_amount"),
     ],
     "journal-book": [
         ("Date", "voucher_date"),
@@ -96,13 +100,22 @@ SLUG_REPORT_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("Grand Total", "grand_total"),
     ],
     "stock-report": [
+        ("SL No", "sl_no"),
+        ("Product", "name"),
         ("Barcode", "barcode"),
-        ("Product Name", "product_name"),
         ("Category", "category"),
         ("Unit", "unit"),
-        ("Current Qty", "current_qty"),
-        ("Rate", "rate"),
+        ("Opening Qty", "opening_qty"),
+        ("Purchase Qty", "purchase_qty"),
+        ("Sales Qty", "sales_qty"),
+        ("Sales Return Qty", "sales_return_qty"),
+        ("Purchase Return Qty", "purchase_return_qty"),
+        ("Adjustment Qty", "adjustment_qty"),
+        ("Closing Qty", "closing_qty"),
+        ("Purchase Rate", "purchase_rate"),
+        ("Sales Rate", "sale_price"),
         ("Stock Value", "stock_value"),
+        ("Last Movement", "last_movement_date"),
     ],
     "daily-stock-register": [
         ("Date", "movement_date"),
@@ -110,7 +123,9 @@ SLUG_REPORT_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("Movement Type", "movement_type"),
         ("Qty In", "qty_in"),
         ("Qty Out", "qty_out"),
-        ("Balance", "balance_qty"),
+        ("Balance Qty", "balance_qty"),
+        ("Rate", "rate"),
+        ("Value", "value"),
     ],
     "price-list": [
         ("Item Code", "item_code"),
@@ -157,6 +172,27 @@ SLUG_REPORT_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("Item Name", "product_name"),
         ("Total Quantity Sold", "quantity_sold"),
         ("Total Revenue Generated", "revenue"),
+    ],
+    "gstr-1": [
+        ("HSN", "hsn"),
+        ("Description", "description"),
+        ("UQC", "uqc"),
+        ("Quantity", "quantity"),
+        ("Taxable Value", "taxable_amount"),
+        ("IGST", "igst_amount"),
+        ("CGST", "cgst_amount"),
+        ("SGST", "sgst_amount"),
+        ("CESS", "cess_amount"),
+        ("Rate %", "tax_percent"),
+    ],
+    "monthly-analysis": [
+        ("Month", "month_label"),
+        ("Trading Income", "trading_income"),
+        ("Direct Expenses", "direct_expenses"),
+        ("Gross Profit", "gross_profit"),
+        ("Indirect Income", "indirect_income"),
+        ("Indirect Expenses", "indirect_expenses"),
+        ("Net Profit", "net_profit"),
     ],
     "salesman-record-book": [
         ("Salesman Name", "salesman_name"),
@@ -215,6 +251,29 @@ ROW_KEY_ALIASES: dict[str, tuple[str, ...]] = {
     "particulars": ("particulars", "account_name", "narration", "party_name", "product_name"),
     "party_name": ("party_name", "customer_name", "creditor_name", "account_name"),
     "product_name": ("product_name", "name", "item_name"),
+    "name": ("name", "product_name"),
+    "sale_price": ("sale_price", "sales_rate", "rate"),
+    "stock_value": ("stock_value", "value", "stock_valuation"),
+    "last_movement_date": ("last_movement_date", "last_movement"),
+    "month_label": ("month_label", "month_name", "month"),
+    "opening_qty": ("opening_qty", "opening_quantity"),
+    "closing_qty": ("closing_qty", "current_qty", "quantity"),
+    "purchase_qty": ("purchase_qty",),
+    "sales_qty": ("sales_qty",),
+    "sales_return_qty": ("sales_return_qty",),
+    "purchase_return_qty": ("purchase_return_qty",),
+    "adjustment_qty": ("adjustment_qty",),
+    "description": ("description", "desc"),
+    "quantity": ("quantity", "qty", "qty_sold"),
+    "tax_percent": ("tax_percent", "gst_percent", "rate"),
+    "igst_amount": ("igst_amount", "iamt"),
+    "margin_percent": ("margin_percent", "margin"),
+    "invoice_date": ("invoice_date", "voucher_date", "date"),
+    "invoice_number": ("invoice_number", "voucher_no", "bill_no"),
+    "qty_sold": ("qty_sold", "quantity_sold"),
+    "sales_value": ("sales_value",),
+    "cost_value": ("cost_value",),
+    "profit": ("profit", "gross_profit"),
     "account_name": ("account_name", "name", "ledger_name"),
     "grand_total": ("grand_total", "total_amount", "amount"),
     "amount": ("amount", "grand_total", "total_amount"),
@@ -254,12 +313,13 @@ ROW_KEY_ALIASES: dict[str, tuple[str, ...]] = {
     "balance_returned": ("balance_returned", "change_returned"),
     "bill_amount": ("bill_amount", "grand_total"),
     "account_type": ("account_type", "type", "group_name"),
-    "opening_debit": ("opening_debit",),
-    "opening_credit": ("opening_credit",),
-    "closing_debit": ("closing_debit",),
-    "closing_credit": ("closing_credit",),
-    "period_debit": ("period_debit", "debit"),
-    "period_credit": ("period_credit", "credit"),
+    "opening_debit": ("opening_debit", "ob_dr", "opening_dr"),
+    "opening_credit": ("opening_credit", "ob_cr", "opening_cr"),
+    "closing_debit": ("closing_debit", "cl_dr", "closing_dr"),
+    "closing_credit": ("closing_credit", "cl_cr", "closing_cr"),
+    "period_debit": ("period_debit", "period_dr", "debit"),
+    "period_credit": ("period_credit", "period_cr", "credit"),
+    "sl_no": ("sl_no", "sl", "serial_no"),
     "rank": ("rank", "sl_no"),
     "qty_in": ("qty_in", "quantity_in"),
     "qty_out": ("qty_out", "quantity_out"),
@@ -283,6 +343,10 @@ def resolve_report_columns(
     """Return desktop column pairs for one mobile report route."""
     if handler == "voucher_book":
         meta = columns_for_voucher_mode(report_mode)
+        return [(item["label"], item["key"]) for item in meta]
+
+    if handler == "sales_profit_book":
+        meta = columns_for_profit_mode(report_mode)
         return [(item["label"], item["key"]) for item in meta]
 
     if slug == "ledger":
@@ -318,6 +382,17 @@ def _resolve_cell_value(row: dict[str, Any], key: str, row_index: int) -> Any:
     if key == "closing_display":
         return _format_opening_closing(row, "closing_balance", "closing_balance_type")
 
+    if key == "stock_value":
+        direct = row.get("stock_value")
+        if direct not in (None, "", 0, 0.0):
+            return direct
+        try:
+            closing = float(row.get("closing_qty") or row.get("quantity") or 0)
+            rate = float(row.get("purchase_rate") or row.get("rate") or 0)
+            return round(closing * rate, 2)
+        except (TypeError, ValueError):
+            return row.get("stock_value", "")
+
     if key in row and row[key] not in (None, ""):
         return row[key]
 
@@ -350,6 +425,21 @@ def project_rows_for_columns(
             projected[-1]["row_type"] = row.get("row_type")
         if row.get("entry_type"):
             projected[-1]["entry_type"] = row.get("entry_type")
+        # Preserve stable joining keys so downstream code (parity checks,
+        # drill-through, per-row navigation) can still identify rows even
+        # when the visible column list excludes them.
+        for stable_key in (
+            "account_id",
+            "voucher_id",
+            "product_id",
+            "party_id",
+            "year",
+            "month",
+            "fy_year",
+            "fy_month",
+        ):
+            if stable_key in row and row[stable_key] not in (None, ""):
+                projected[-1][stable_key] = row[stable_key]
     return projected
 
 

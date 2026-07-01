@@ -157,7 +157,27 @@ ROUTE_DEFINITIONS: dict[str, dict[str, Any]] = {
         "cash_tender_history",
         filters=STANDARD_DATE_FILTERS + (SEARCH_FILTER,),
     ),
-    "sales-wise-profit": _route("Sales Wise Profit", "Books", "sales_profit_book"),
+    "sales-wise-profit": _route(
+        "Sales Wise Profit",
+        "Books",
+        "sales_profit_book",
+        filters=STANDARD_DATE_FILTERS + (
+            {
+                "key": "report_mode",
+                "label": "Report Mode",
+                "type": "select",
+                "required": True,
+                "options": ["Bill Wise Profit", "Party Wise Profit", "Item Wise Profit"],
+                "default": "Bill Wise Profit",
+            },
+            SEARCH_FILTER,
+        ),
+        modes=(
+            {"label": "Bill Wise Profit", "method": "get_bill_wise"},
+            {"label": "Party Wise Profit", "method": "get_party_wise"},
+            {"label": "Item Wise Profit", "method": "get_item_wise"},
+        ),
+    ),
     "purchase-book": _route(
         "Purchase Book",
         "Books",
