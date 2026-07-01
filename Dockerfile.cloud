@@ -10,6 +10,7 @@ COPY requirements-cloud.txt .
 RUN pip install --no-cache-dir -r requirements-cloud.txt
 
 COPY config.py .
+COPY db.py .
 COPY mobile_api.py .
 COPY start_cloud_mobile.py .
 COPY sync_service.py .

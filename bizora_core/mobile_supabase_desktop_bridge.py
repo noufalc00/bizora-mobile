@@ -216,6 +216,20 @@ def _insert_rows(connection, table_name: str, rows: list[dict[str, Any]]) -> Non
         connection.commit()
 
 
+def _apply_desktop_party_links(hydrated: dict[str, list[dict[str, Any]]]) -> None:
+    """Backfill party -> ledger links before desktop logic runs on hydrated SQLite."""
+    parties = hydrated.get("parties") or []
+    ledger_accounts = hydrated.get("ledger_accounts") or []
+    if not parties or not ledger_accounts:
+        return
+    try:
+        from bizora_core.mobile_supabase_party_links import assign_party_ledger_links
+
+        hydrated["parties"] = assign_party_ledger_links(parties, ledger_accounts)
+    except Exception as exc:
+        print(f"[MOBILE-BRIDGE] Party link assignment failed: {exc}")
+
+
 def build_desktop_database(service: Any, company_id: int) -> tuple[Any, str]:
     """Create a temporary SQLite file populated with one company's synced data.
 
@@ -235,7 +249,12 @@ def build_desktop_database(service: Any, company_id: int) -> tuple[Any, str]:
 
     for table_name in HYDRATION_TABLES:
         rows = _fetch_table_rows(service, table_name, company_id, hydrated=hydrated)
-        _insert_rows(connection, table_name, rows)
+        hydrated[table_name] = rows
+
+    _apply_desktop_party_links(hydrated)
+
+    for table_name in HYDRATION_TABLES:
+        _insert_rows(connection, table_name, hydrated.get(table_name) or [])
 
     return db, temp_path
 

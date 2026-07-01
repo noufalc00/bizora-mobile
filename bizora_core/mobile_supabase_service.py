@@ -770,9 +770,9 @@ class MobileSupabaseService:
 
         Report dispatch order:
             1. Fast-path RPC (Supabase views + `f_*` functions).
-            2. Cloud Python handlers (`mobile_supabase_report_handlers`).
-            3. Simple table fetch + filter for mapped Supabase tables.
-            4. Desktop SQLite hydration bridge, when the `db` module exists.
+            2. Desktop SQLite hydration bridge (same handlers as desktop app).
+            3. Cloud Python handlers (`mobile_supabase_report_handlers`).
+            4. Simple table fetch + filter for mapped Supabase tables.
             5. Friendly unsupported message on cloud-only deployments.
         """
         definition = get_route_definition(slug)
@@ -792,7 +792,10 @@ class MobileSupabaseService:
             FAST_PATH_HANDLERS,
             try_run_fast_report,
         )
-        from bizora_core.mobile_supabase_report_handlers import run_cloud_handler_report
+        from bizora_core.mobile_supabase_desktop_bridge import (
+            desktop_bridge_available,
+            run_report_via_desktop_bridge,
+        )
 
         fast_result = try_run_fast_report(
             self._client,
@@ -802,6 +805,22 @@ class MobileSupabaseService:
         )
         if fast_result is not None:
             return fast_result
+
+        if desktop_bridge_available():
+            bridge_result = run_report_via_desktop_bridge(
+                self,
+                slug,
+                report_filters,
+                company_id,
+            )
+            if bridge_result.get("success"):
+                return bridge_result
+            print(
+                f"DEBUG: Desktop bridge did not serve slug='{slug}' "
+                f"company_id={resolved_id}: {bridge_result.get('message', '')}"
+            )
+
+        from bizora_core.mobile_supabase_report_handlers import run_cloud_handler_report
 
         cloud_result = run_cloud_handler_report(
             str(definition.get("handler") or ""),
@@ -828,29 +847,22 @@ class MobileSupabaseService:
         else:
             bridge_reason = "SLUG_NOT_MAPPED"
 
-        from bizora_core.mobile_supabase_desktop_bridge import (
-            desktop_bridge_available,
-            run_report_via_desktop_bridge,
-        )
-
         if desktop_bridge_available():
             print(
-                f"DEBUG: Falling back to Bridge because cloud handlers did not serve "
-                f"this report. bridge_reason={bridge_reason} slug='{slug}' "
-                f"company_id={resolved_id}"
+                f"DEBUG: Cloud handlers did not serve slug='{slug}' "
+                f"company_id={resolved_id}; bridge already attempted."
             )
-            return run_report_via_desktop_bridge(self, slug, report_filters, company_id)
-
-        print(
-            f"DEBUG: Cloud report unavailable without bridge. "
-            f"bridge_reason={bridge_reason} slug='{slug}' company_id={resolved_id}"
-        )
+        else:
+            print(
+                f"DEBUG: Cloud report unavailable without bridge. "
+                f"bridge_reason={bridge_reason} slug='{slug}' company_id={resolved_id}"
+            )
         return {
             "success": False,
             "message": UNSUPPORTED_CLOUD_MESSAGE,
             "rows": [],
             "data_source": "supabase",
-            "bridge_available": False,
+            "bridge_available": desktop_bridge_available(),
         }
 
     @staticmethod

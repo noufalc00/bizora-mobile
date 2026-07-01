@@ -11,6 +11,8 @@
 --   2. Paste this entire file and click "Run".
 --   3. Re-run `sync_bulk_to_supabase.py` at least once so the base
 --      tables contain the latest ledger_accounts + ledger_entries data.
+--      The parties table must include `ledger_account_id` so creditor
+--      and debtor ledgers mirror the desktop one-to-one links.
 --
 -- Contracts (must match desktop logic 1:1):
 --   * Excludes voucher_type values that live in this array:
@@ -26,6 +28,15 @@
 --     'direct labour', 'direct labor', 'carriage',
 --     'direct expense', 'wages'.
 -- =====================================================================
+
+-- -----------------------------------------------------------------
+-- 0. Schema parity columns required for desktop mirroring.
+-- -----------------------------------------------------------------
+ALTER TABLE public.parties
+    ADD COLUMN IF NOT EXISTS ledger_account_id INTEGER;
+
+COMMENT ON COLUMN public.parties.ledger_account_id IS
+'Desktop party -> ledger account link. Required for creditor/debtor ledger parity on mobile web.';
 
 -- -----------------------------------------------------------------
 -- 1. Enriched ledger entries: joins account_name / account_type once.
@@ -583,7 +594,206 @@ COMMENT ON FUNCTION f_cash_book(int, date, date) IS
 
 
 -- -----------------------------------------------------------------
--- 8. Sanity checks (run these once after install).
+-- 8. Ledger Statement RPC.
+--    Mirrors LedgerLogic.get_account_ledger (the second definition
+--    at ledger_logic.py:3089 which is the one called by
+--    `_run_ledger_statement`). Structurally identical to f_cash_book
+--    but the account is passed in explicitly instead of being
+--    discovered from ledger_accounts.
+--
+--    Opening balance formula:
+--        opening = signed ledger_accounts.opening_balance
+--                + SUM(debit-credit) on v_ledger_entries_enriched
+--                  where voucher_date < p_from_date
+--
+--    Per-row `particulars` comes from the contra account (same
+--    voucher_no, different account_id, non-quote voucher_type) so the
+--    Ledger Statement column that today renders empty finally shows
+--    the actual "who was on the other side" value.
+--
+--    Return shape matches f_cash_book: `entry` rows first, one
+--    trailing `summary` row always emitted so empty windows still
+--    return opening/closing balances.
+-- -----------------------------------------------------------------
+DROP FUNCTION IF EXISTS f_ledger_statement(int, int, date, date);
+CREATE OR REPLACE FUNCTION f_ledger_statement(
+    p_company_id int,
+    p_account_id int,
+    p_from_date  date,
+    p_to_date    date
+)
+RETURNS TABLE (
+    -- `out_*` prefix keeps every OUT column out of PL/pgSQL name
+    -- resolution so we never hit the SQLSTATE 42702 ambiguity trap
+    -- that bit both f_monthly_analysis and f_cash_book during rollout.
+    out_row_type         text,
+    out_voucher_date     date,
+    out_voucher_no       text,
+    out_voucher_type     text,
+    out_particulars      text,
+    out_narration        text,
+    out_debit            numeric,
+    out_credit           numeric,
+    out_running_balance  numeric,
+    out_opening_balance  numeric,
+    out_period_debit     numeric,
+    out_period_credit    numeric,
+    out_closing_balance  numeric
+)
+LANGUAGE plpgsql
+STABLE
+AS $$
+DECLARE
+    v_account_exists boolean;
+    v_ob_amt   numeric := 0;
+    v_ob_type  text    := 'Dr';
+    v_opening  numeric := 0;
+BEGIN
+    -- Validate the account belongs to the company (and is active).
+    -- We deliberately require an exact account_id match; ledger-statement
+    -- has no fallback discovery like cash-book because the caller is
+    -- expected to pass an explicit selection.
+    SELECT TRUE,
+           COALESCE(la.opening_balance, 0),
+           COALESCE(la.opening_balance_type, 'Dr')
+      INTO v_account_exists, v_ob_amt, v_ob_type
+      FROM ledger_accounts la
+     WHERE la.company_id = p_company_id
+       AND la.id = p_account_id
+       AND is_row_active(la.is_active)
+     LIMIT 1;
+
+    IF NOT COALESCE(v_account_exists, FALSE) THEN
+        -- Unknown / inactive account: emit a single zero summary row
+        -- so callers still receive a well-formed payload.
+        RETURN QUERY SELECT
+            'summary'::text, NULL::date, NULL::text, NULL::text,
+            NULL::text, NULL::text,
+            NULL::numeric, NULL::numeric, NULL::numeric,
+            0::numeric, 0::numeric, 0::numeric, 0::numeric;
+        RETURN;
+    END IF;
+
+    -- Opening balance = signed opening + prior-period movement.
+    v_opening := CASE WHEN v_ob_type = 'Dr' THEN v_ob_amt ELSE -v_ob_amt END;
+
+    SELECT v_opening + COALESCE(SUM(ve.debit) - SUM(ve.credit), 0)::numeric
+      INTO v_opening
+      FROM v_ledger_entries_enriched ve
+     WHERE ve.company_id = p_company_id
+       AND ve.account_id = p_account_id
+       AND ve.voucher_date::date < p_from_date;
+
+    RETURN QUERY
+    WITH acct_entries AS (
+        SELECT
+            ve.entry_id                          AS c_entry_id,
+            ve.voucher_date::date                AS c_voucher_date,
+            COALESCE(ve.voucher_no, '')::text    AS c_voucher_no,
+            COALESCE(ve.voucher_type, '')::text  AS c_voucher_type,
+            COALESCE(ve.narration, '')::text     AS c_narration,
+            COALESCE(ve.debit, 0)::numeric       AS c_debit,
+            COALESCE(ve.credit, 0)::numeric      AS c_credit
+        FROM v_ledger_entries_enriched ve
+        WHERE ve.company_id = p_company_id
+          AND ve.account_id = p_account_id
+          AND ve.voucher_date::date BETWEEN p_from_date AND p_to_date
+    ),
+    with_contra AS (
+        SELECT
+            a.*,
+            COALESCE(
+                (
+                    -- Same voucher, the *other* posting leg. Excludes
+                    -- self and quotation-style vouchers to match
+                    -- desktop LedgerLogic filtering.
+                    SELECT la.account_name::text
+                    FROM ledger_entries le2
+                    JOIN ledger_accounts la ON la.id = le2.account_id
+                    WHERE le2.company_id = p_company_id
+                      AND le2.voucher_no = a.c_voucher_no
+                      AND le2.id != a.c_entry_id
+                      AND le2.account_id != p_account_id
+                      AND COALESCE(le2.voucher_type, '') NOT IN (
+                            'quotation', 'estimate', 'quote',
+                            'Quotation', 'Estimate', 'Quote'
+                      )
+                    LIMIT 1
+                ),
+                'Unknown'
+            ) AS c_particulars
+        FROM acct_entries a
+    ),
+    ordered AS (
+        SELECT
+            wc.*,
+            ROW_NUMBER() OVER (ORDER BY wc.c_voucher_date, wc.c_entry_id) AS c_rn
+        FROM with_contra wc
+    ),
+    with_running AS (
+        SELECT
+            o.*,
+            v_opening + SUM(o.c_debit - o.c_credit) OVER (
+                ORDER BY o.c_rn
+                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+            ) AS c_running_balance
+        FROM ordered o
+    ),
+    period_totals AS (
+        SELECT
+            COALESCE(SUM(ve.debit),  0)::numeric AS agg_debit,
+            COALESCE(SUM(ve.credit), 0)::numeric AS agg_credit
+        FROM v_ledger_entries_enriched ve
+        WHERE ve.company_id = p_company_id
+          AND ve.account_id = p_account_id
+          AND ve.voucher_date::date BETWEEN p_from_date AND p_to_date
+    )
+    -- Entry rows first.
+    SELECT
+        'entry'::text                            AS out_row_type,
+        w.c_voucher_date                         AS out_voucher_date,
+        w.c_voucher_no                           AS out_voucher_no,
+        w.c_voucher_type                         AS out_voucher_type,
+        w.c_particulars                          AS out_particulars,
+        w.c_narration                            AS out_narration,
+        w.c_debit                                AS out_debit,
+        w.c_credit                               AS out_credit,
+        ROUND(w.c_running_balance, 2)::numeric   AS out_running_balance,
+        NULL::numeric                            AS out_opening_balance,
+        NULL::numeric                            AS out_period_debit,
+        NULL::numeric                            AS out_period_credit,
+        NULL::numeric                            AS out_closing_balance
+    FROM with_running w
+
+    UNION ALL
+
+    -- Trailing summary row.
+    SELECT
+        'summary'::text                          AS out_row_type,
+        NULL::date, NULL::text, NULL::text,
+        NULL::text, NULL::text,
+        NULL::numeric, NULL::numeric, NULL::numeric,
+        ROUND(v_opening, 2)::numeric             AS out_opening_balance,
+        ROUND(pt.agg_debit, 2)::numeric          AS out_period_debit,
+        ROUND(pt.agg_credit, 2)::numeric         AS out_period_credit,
+        ROUND(
+            v_opening + pt.agg_debit - pt.agg_credit, 2
+        )::numeric                               AS out_closing_balance
+    FROM period_totals pt
+
+    -- Column ordinals, not names — ambiguity-safe.
+    -- Col 1 out_row_type: 'entry' < 'summary' ASC so entries lead.
+    -- Col 2 out_voucher_date: NULL (from summary row) sorts last.
+    ORDER BY 1 ASC, 2 ASC NULLS LAST;
+END;
+$$;
+
+COMMENT ON FUNCTION f_ledger_statement(int, int, date, date) IS
+'Ledger Statement mirroring LedgerLogic.get_account_ledger. Returns entry rows + one trailing summary row (row_type=summary) so opening/period/closing figures are always available even when the entry window is empty.';
+
+
+-- -----------------------------------------------------------------
+-- 9. Sanity checks (run these once after install).
 -- -----------------------------------------------------------------
 --   select count(*) from v_ledger_entries_enriched;
 --   select * from f_trial_balance(25, '2024-04-01', '2026-06-30', 'All', null) limit 5;

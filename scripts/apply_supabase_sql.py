@@ -38,6 +38,7 @@ DROP_STATEMENTS = (
     "DROP FUNCTION IF EXISTS public.f_day_book_entries(int, date, date)",
     "DROP FUNCTION IF EXISTS public.f_trial_balance_debug(int, date, date)",
     "DROP FUNCTION IF EXISTS public.f_cash_book(int, date, date)",
+    "DROP FUNCTION IF EXISTS public.f_ledger_statement(int, int, date, date)",
     "DROP FUNCTION IF EXISTS public.is_row_active(anyelement)",
     "DROP VIEW IF EXISTS public.v_ledger_monthly_totals CASCADE",
     "DROP VIEW IF EXISTS public.v_ledger_daily_totals CASCADE",
@@ -90,7 +91,8 @@ def main() -> int:
                     'f_trial_balance',
                     'f_monthly_analysis',
                     'f_day_book_entries',
-                    'f_cash_book'
+                    'f_cash_book',
+                    'f_ledger_statement'
                 )
                 ORDER BY proname
                 """
@@ -105,6 +107,7 @@ def main() -> int:
                 "f_monthly_analysis",
                 "f_day_book_entries",
                 "f_cash_book",
+                "f_ledger_statement",
             } - {r[0] for r in rows}
             if missing:
                 print(f"MISSING functions: {missing}")

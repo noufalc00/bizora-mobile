@@ -17,7 +17,6 @@ from bizora_core.mobile_web_registry import (
     build_navigation_payload,
     get_route_definition,
 )
-from utils.theme_manager import ThemeManager
 
 
 VOUCHER_LOGIC_MAP: dict[str, type] = {}
@@ -69,6 +68,8 @@ class MobileWebService:
 
     def get_theme_payload(self, theme_name: Optional[str] = None) -> dict[str, Any]:
         """Return desktop color tokens for light or dark mode."""
+        from utils.theme_manager import ThemeManager
+
         master_db = ThemeManager.resolve_master_db_path()
         resolved = (theme_name or ThemeManager.get_theme_preference(master_db)).strip().lower()
         if resolved not in ThemeManager.VALID_THEMES:
@@ -394,17 +395,118 @@ class MobileWebService:
         return {"success": True, "message": "", "rows": rows}
 
     def _run_ledger_statement(self, company_id: int, _definition: dict[str, Any], filters: dict[str, Any]) -> dict[str, Any]:
+        """Bridge handler for Ledger Statement.
+
+        Two things this handler adds beyond the desktop response:
+
+        1. `particulars` on every entry. Desktop `get_account_ledger`
+           returns rows without a `particulars` column, but the mobile
+           UI (see `mobile_report_columns.py`) has a "Particulars"
+           column that ends up empty. We derive the contra account here
+           so the bridge and the fast-path RPC emit the same shape and
+           the parity check has real content to compare.
+
+        2. A `summary` dict shaped to match `_run_cash_book` so the
+           mobile summary strip renders consistently across ledger-family
+           reports.
+        """
         from bizora_core.ledger_logic import LedgerLogic
 
         account_id = filters.get("account_id")
         if not account_id:
-            return {"success": False, "message": "Account is required.", "rows": []}
+            return {
+                "success": False,
+                "message": "Account is required.",
+                "rows": [],
+                "summary": {
+                    "opening_balance": 0.0,
+                    "period_debit": 0.0,
+                    "period_credit": 0.0,
+                    "closing_balance": 0.0,
+                },
+            }
+        try:
+            account_id_int = int(account_id)
+        except (TypeError, ValueError):
+            return {
+                "success": False,
+                "message": f"Invalid account_id: {account_id!r}",
+                "rows": [],
+            }
+
         logic = LedgerLogic(self.db)
         from_dt = date.fromisoformat(self._parse_date(filters.get("from_date")))
         to_dt = date.fromisoformat(self._parse_date(filters.get("to_date")))
-        result = logic.get_account_ledger(company_id, int(account_id), from_dt, to_dt)
-        rows = result.get("entries", []) if isinstance(result, dict) else []
-        return {"success": True, "message": "", "rows": rows, "meta": result}
+        result = logic.get_account_ledger(company_id, account_id_int, from_dt, to_dt)
+        if not isinstance(result, dict):
+            return {"success": False, "message": "Invalid Ledger response", "rows": []}
+
+        def _f(value: Any) -> float:
+            try:
+                return float(value or 0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        raw_entries = result.get("entries") or []
+        # Contra-account lookup for `particulars`. Batching keeps this
+        # cheap for typical single-account statements (few dozen rows).
+        placeholder = self.db._get_placeholder()
+        rows: list[dict[str, Any]] = []
+        for entry in raw_entries:
+            entry_dict = dict(entry)
+            voucher_no = entry_dict.get("voucher_no") or ""
+            entry_id = entry_dict.get("id")
+            contra = ""
+            if voucher_no and entry_id is not None:
+                try:
+                    contra_rows = self.db.execute_query(
+                        f"""
+                        SELECT la.account_name
+                          FROM ledger_entries le2
+                          JOIN ledger_accounts la ON la.id = le2.account_id
+                         WHERE le2.company_id = {placeholder}
+                           AND le2.voucher_no = {placeholder}
+                           AND le2.id != {placeholder}
+                           AND le2.account_id != {placeholder}
+                           AND le2.voucher_type NOT IN (
+                                'quotation', 'estimate', 'quote',
+                                'Quotation', 'Estimate', 'Quote'
+                           )
+                         LIMIT 1
+                        """,
+                        (company_id, voucher_no, entry_id, account_id_int),
+                    )
+                    if contra_rows:
+                        contra = contra_rows[0].get("account_name") or ""
+                except Exception as exc:
+                    print(f"[MOBILE] contra lookup failed for voucher {voucher_no}: {exc}")
+
+            entry_dict["particulars"] = contra or "Unknown"
+            entry_dict["debit"] = _f(entry_dict.get("debit"))
+            entry_dict["credit"] = _f(entry_dict.get("credit"))
+            entry_dict["running_balance"] = _f(entry_dict.get("running_balance"))
+            entry_dict["account_id"] = account_id_int
+            rows.append(entry_dict)
+
+        summary = {
+            "opening_balance": _f(result.get("opening_balance")),
+            "period_debit": _f(result.get("period_debit")),
+            "period_credit": _f(result.get("period_credit")),
+            "closing_balance": _f(result.get("closing_balance")),
+        }
+
+        return {
+            "success": True,
+            "message": "",
+            "rows": rows,
+            "summary": summary,
+            "summary_labels": {
+                "opening_balance": "Opening Balance",
+                "period_debit": "Period Debit",
+                "period_credit": "Period Credit",
+                "closing_balance": "Closing Balance",
+            },
+        }
 
     def _run_bill_history(self, company_id: int, _definition: dict[str, Any], filters: dict[str, Any]) -> dict[str, Any]:
         from bizora_core.bill_history_logic import BillHistoryLogic

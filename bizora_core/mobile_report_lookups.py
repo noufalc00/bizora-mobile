@@ -164,13 +164,25 @@ def build_supabase_report_lookups(
         "po_statuses": PO_STATUS_OPTIONS,
     }
     try:
-        parties = fetch_table(
-            "parties",
-            company_id,
-            select="id,name,party_type",
-            limit=1000,
-            order_col="name",
-        )
+        try:
+            parties = fetch_table(
+                "parties",
+                company_id,
+                select="id,name,party_type,opening_balance,ledger_account_id",
+                limit=1000,
+                order_col="name",
+            )
+        except Exception as exc:
+            message = str(exc)
+            if "ledger_account_id" not in message:
+                raise
+            parties = fetch_table(
+                "parties",
+                company_id,
+                select="id,name,party_type,opening_balance",
+                limit=1000,
+                order_col="name",
+            )
         products = fetch_table(
             "products",
             company_id,
@@ -181,7 +193,10 @@ def build_supabase_report_lookups(
         ledger_accounts = fetch_table(
             "ledger_accounts",
             company_id,
-            select="id,account_name,account_type,group_name,is_active",
+            select=(
+                "id,account_name,account_type,group_name,is_active,"
+                "opening_balance,opening_balance_type"
+            ),
             limit=1000,
             order_col="account_name",
         )

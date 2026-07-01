@@ -113,6 +113,17 @@ def main() -> int:
             "f_cash_book",
             {"p_company_id": COMPANY_ID, "p_from_date": FROM_DATE, "p_to_date": TO_DATE},
         ),
+        (
+            "f_ledger_statement",
+            {
+                "p_company_id": COMPANY_ID,
+                # Account 211 = Capital Account for company 25, known good
+                # from earlier trial-balance / account-audit runs.
+                "p_account_id": int(os.getenv("QA_LEDGER_ACCOUNT_ID", "211")),
+                "p_from_date": FROM_DATE,
+                "p_to_date": TO_DATE,
+            },
+        ),
     ]
 
     failed = 0
