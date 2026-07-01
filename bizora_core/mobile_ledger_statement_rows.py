@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping
 
 from utils.date_display import format_display_date
 
@@ -30,6 +30,43 @@ def format_signed_balance(net: float) -> str:
     if rounded >= 0:
         return f"{abs(rounded):,.2f} Dr"
     return f"{abs(rounded):,.2f} Cr"
+
+
+def resolve_ledger_account_id(filters: Mapping[str, Any] | None) -> int | None:
+    """Return one explicit ledger account id from mobile ledger filters."""
+    for key in ("search", "account_id"):
+        raw = (filters or {}).get(key)
+        if raw in (None, "", 0):
+            continue
+        text = str(raw).strip()
+        if text.isdigit():
+            return int(text)
+    return None
+
+
+def ledger_summary_totals(rows: list[dict[str, Any]]) -> dict[str, float]:
+    """Match desktop ledger summary footer totals."""
+    opening = 0.0
+    debit = 0.0
+    credit = 0.0
+    for row in rows:
+        try:
+            opening += float(row.get("opening_balance") or 0.0)
+        except (TypeError, ValueError):
+            pass
+        try:
+            debit += float(row.get("period_debit") or 0.0)
+        except (TypeError, ValueError):
+            pass
+        try:
+            credit += float(row.get("period_credit") or 0.0)
+        except (TypeError, ValueError):
+            pass
+    return {
+        "opening_balance": round(opening, 2),
+        "period_debit": round(debit, 2),
+        "period_credit": round(credit, 2),
+    }
 
 
 def _float_value(value: Any) -> float:

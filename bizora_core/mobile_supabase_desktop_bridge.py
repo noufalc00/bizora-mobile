@@ -359,6 +359,12 @@ def run_report_via_desktop_bridge(
         result = mobile_web_service_cls(db=db).run_report(slug, filters, company_id=resolved_id)
         result["data_source"] = "desktop_mirror"
         result["mirror_mode"] = True
+        row_count = len(result.get("rows") or [])
+        print(
+            f"DEBUG: Mirror bridge result slug='{slug}' rows={row_count} "
+            f"render_slug={result.get('render_slug') or slug} "
+            f"ledger_format={result.get('ledger_statement_format')}"
+        )
         return result
     except Exception as exc:
         print(f"[MOBILE-BRIDGE] Report '{slug}' failed: {exc}")

@@ -847,6 +847,20 @@
     return "";
   }
 
+  function ledgerEmptyAccountLabel(ledgerView) {
+    const view = ledgerView || "General";
+    if (view === "Debtors") {
+      return "All Debtors";
+    }
+    if (view === "Creditors") {
+      return "All Creditors";
+    }
+    if (view === "Cash/Bank") {
+      return "All Cash & Bank Accounts";
+    }
+    return "All General Accounts";
+  }
+
   function resolveLedgerSearchOptions(lookups, ledgerView) {
     const view = ledgerView || "General";
     if (view === "Debtors") {
@@ -913,7 +927,13 @@
     if (slug === "ledger" && filter.key === "search") {
       const ledgerView = (document.getElementById("filter-ledger_view") || {}).value || "General";
       const options = resolveLedgerSearchOptions(lookups, ledgerView);
-      return buildLookupSelect(filter, options, "name", "All Accounts", "id");
+      return buildLookupSelect(
+        filter,
+        options,
+        "name",
+        ledgerEmptyAccountLabel(ledgerView),
+        "id",
+      );
     }
     if (slug === "purchase-order-book" && filter.key === "search" && (lookups.creditors_po || []).length) {
       return buildLookupSelect(
@@ -1299,6 +1319,20 @@
     `;
   }
 
+  function resolveLedgerRenderSlug(slug, payload, fallbackSlug) {
+    if (payload.ledger_statement_format) {
+      return "ledger-statement";
+    }
+    if (String(payload.render_slug || "").trim()) {
+      return payload.render_slug;
+    }
+    const firstRow = (payload.rows || [])[0] || {};
+    if (firstRow.row_type === "opening" || firstRow.voucher_type === "Opening Balance") {
+      return "ledger-statement";
+    }
+    return fallbackSlug || slug;
+  }
+
   async function runReport(slug) {
     const formRoot = document.getElementById("reportForm");
     const resultRoot = document.getElementById("reportResult");
@@ -1311,12 +1345,13 @@
         resultRoot.innerHTML = `<div class="error-state">${payload.message || "Report failed."}</div>`;
         return;
       }
+      const renderSlug = resolveLedgerRenderSlug(slug, payload, resolved.renderSlug);
       resultRoot.innerHTML = renderResultTable(
         payload.rows || [],
         payload.columns || [],
         payload.row_count,
         {
-          slug: resolved.renderSlug,
+          slug: renderSlug,
           summary: payload.summary || null,
           summaryLabels: payload.summary_labels || null,
         },
@@ -1346,8 +1381,9 @@
       el.main.innerHTML = `
         <section class="panel">
           <div class="panel-title">${route.title || title}</div>
+          ${slug === "ledger" ? '<p class="report-hint">Choose <strong>All Creditors</strong> (or Debtors) for the summary list. Pick one account to load voucher-by-voucher detail like desktop Load.</p>' : ""}
           <form id="reportForm" class="filter-grid">${fields}</form>
-          <button id="runReportBtn" class="primary-btn" type="button">Open Report</button>
+          <button id="runReportBtn" class="primary-btn" type="button">${slug === "ledger" ? "Load" : "Open Report"}</button>
           <div id="reportResult"></div>
         </section>
       `;

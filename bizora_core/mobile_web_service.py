@@ -209,8 +209,9 @@ class MobileWebService:
                 rows = result.get("rows") or []
                 from bizora_core.mobile_report_columns import build_slug_table_payload
 
+                table_slug = str(result.get("render_slug") or slug)
                 table_payload = build_slug_table_payload(
-                    slug,
+                    table_slug,
                     rows,
                     handler=handler_name,
                     report_mode=(filters or {}).get("report_mode"),
@@ -373,6 +374,29 @@ class MobileWebService:
 
     def _run_ledger(self, company_id: int, _definition: dict[str, Any], filters: dict[str, Any]) -> dict[str, Any]:
         from bizora_core.ledger_logic import LedgerLogic
+        from bizora_core.mobile_ledger_statement_rows import (
+            DESKTOP_LEDGER_SUMMARY_LABELS,
+            ledger_summary_totals,
+            resolve_ledger_account_id,
+        )
+
+        account_id = resolve_ledger_account_id(filters)
+        if account_id is not None:
+            account_name = str(filters.get("account_name") or "").strip()
+            if not account_name:
+                account = LedgerLogic(self.db).get_account(company_id, account_id) or {}
+                account_name = str(account.get("account_name") or "")
+            detail = self._run_ledger_statement(
+                company_id,
+                _definition,
+                {
+                    **(filters or {}),
+                    "account_id": account_id,
+                    "account_name": account_name,
+                },
+            )
+            detail["render_slug"] = "ledger-statement"
+            return detail
 
         logic = LedgerLogic(self.db)
         from_dt = date.fromisoformat(self._parse_date(filters.get("from_date")))
@@ -390,7 +414,19 @@ class MobileWebService:
         from bizora_core.mobile_supabase_ledger import filter_ledger_summary_rows
 
         rows = filter_ledger_summary_rows(rows, filters.get("search"))
-        return {"success": True, "message": "", "rows": rows}
+        totals = ledger_summary_totals(rows)
+        return {
+            "success": True,
+            "message": "",
+            "rows": rows,
+            "summary": totals,
+            "summary_labels": {
+                "opening_balance": "Opening",
+                "period_debit": "Debit",
+                "period_credit": "Credit",
+            },
+            "render_slug": "ledger",
+        }
 
     def _run_ledger_statement(self, company_id: int, _definition: dict[str, Any], filters: dict[str, Any]) -> dict[str, Any]:
         """Bridge handler for Ledger Statement (desktop detail grid parity)."""
