@@ -173,23 +173,35 @@ def _inject_mobile_html(content: str) -> str:
 
 
 @app.get("/api/health")
-def api_health() -> dict[str, str]:
+def api_health() -> dict[str, Any]:
     """Simple health check endpoint."""
-    return {"status": f"{BRAND_NAME} mobile API is running"}
+    from bizora_core.mobile_ledger_statement_rows import LEDGER_STATEMENT_FORMAT_VERSION
+
+    return {
+        "status": f"{BRAND_NAME} mobile API is running",
+        "ledger_statement_format": LEDGER_STATEMENT_FORMAT_VERSION,
+    }
 
 
 @app.get("/api/status")
 def api_status() -> dict[str, Any]:
     """Return active backend and connection hints for mobile clients."""
+    from bizora_core.mobile_ledger_statement_rows import LEDGER_STATEMENT_FORMAT_VERSION
+
     port = resolve_server_port()
     urls = build_mobile_access_urls(port)
     public_url = (
         (os.getenv("MOBILE_PUBLIC_URL") or "").strip()
         or (os.getenv("RENDER_EXTERNAL_URL") or "").strip()
     )
+    mirror_mode = (os.getenv("MOBILE_MIRROR_MODE") or "").strip().lower()
+    if not mirror_mode and _data_source == "supabase":
+        mirror_mode = "bridge"
     return {
         "data_source": _data_source,
         "deployment": "cloud" if _data_source == "supabase" else "local",
+        "mirror_mode": mirror_mode,
+        "ledger_statement_format": LEDGER_STATEMENT_FORMAT_VERSION,
         "public_url": public_url,
         "localhost_urls": urls["localhost"],
         "lan_urls": urls["lan"],

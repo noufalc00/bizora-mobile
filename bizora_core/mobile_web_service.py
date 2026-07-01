@@ -393,22 +393,12 @@ class MobileWebService:
         return {"success": True, "message": "", "rows": rows}
 
     def _run_ledger_statement(self, company_id: int, _definition: dict[str, Any], filters: dict[str, Any]) -> dict[str, Any]:
-        """Bridge handler for Ledger Statement.
-
-        Two things this handler adds beyond the desktop response:
-
-        1. `particulars` on every entry. Desktop `get_account_ledger`
-           returns rows without a `particulars` column, but the mobile
-           UI (see `mobile_report_columns.py`) has a "Particulars"
-           column that ends up empty. We derive the contra account here
-           so the bridge and the fast-path RPC emit the same shape and
-           the parity check has real content to compare.
-
-        2. A `summary` dict shaped to match `_run_cash_book` so the
-           mobile summary strip renders consistently across ledger-family
-           reports.
-        """
+        """Bridge handler for Ledger Statement (desktop detail grid parity)."""
         from bizora_core.ledger_logic import LedgerLogic
+        from bizora_core.mobile_ledger_statement_rows import (
+            DESKTOP_LEDGER_SUMMARY_LABELS,
+            build_desktop_ledger_statement_payload,
+        )
 
         account_id = filters.get("account_id")
         if not account_id:
@@ -422,6 +412,7 @@ class MobileWebService:
                     "period_credit": 0.0,
                     "closing_balance": 0.0,
                 },
+                "summary_labels": dict(DESKTOP_LEDGER_SUMMARY_LABELS),
             }
         try:
             account_id_int = int(account_id)
@@ -439,71 +430,19 @@ class MobileWebService:
         if not isinstance(result, dict):
             return {"success": False, "message": "Invalid Ledger response", "rows": []}
 
-        def _f(value: Any) -> float:
-            try:
-                return float(value or 0)
-            except (TypeError, ValueError):
-                return 0.0
-
-        raw_entries = result.get("entries") or []
-        # Contra-account lookup for `particulars`. Batching keeps this
-        # cheap for typical single-account statements (few dozen rows).
-        placeholder = self.db._get_placeholder()
-        rows: list[dict[str, Any]] = []
-        for entry in raw_entries:
-            entry_dict = dict(entry)
-            voucher_no = entry_dict.get("voucher_no") or ""
-            entry_id = entry_dict.get("id")
-            contra = ""
-            if voucher_no and entry_id is not None:
-                try:
-                    contra_rows = self.db.execute_query(
-                        f"""
-                        SELECT la.account_name
-                          FROM ledger_entries le2
-                          JOIN ledger_accounts la ON la.id = le2.account_id
-                         WHERE le2.company_id = {placeholder}
-                           AND le2.voucher_no = {placeholder}
-                           AND le2.id != {placeholder}
-                           AND le2.account_id != {placeholder}
-                           AND le2.voucher_type NOT IN (
-                                'quotation', 'estimate', 'quote',
-                                'Quotation', 'Estimate', 'Quote'
-                           )
-                         LIMIT 1
-                        """,
-                        (company_id, voucher_no, entry_id, account_id_int),
-                    )
-                    if contra_rows:
-                        contra = contra_rows[0].get("account_name") or ""
-                except Exception as exc:
-                    print(f"[MOBILE] contra lookup failed for voucher {voucher_no}: {exc}")
-
-            entry_dict["particulars"] = contra or "Unknown"
-            entry_dict["debit"] = _f(entry_dict.get("debit"))
-            entry_dict["credit"] = _f(entry_dict.get("credit"))
-            entry_dict["running_balance"] = _f(entry_dict.get("running_balance"))
-            entry_dict["account_id"] = account_id_int
-            rows.append(entry_dict)
-
-        summary = {
-            "opening_balance": _f(result.get("opening_balance")),
-            "period_debit": _f(result.get("period_debit")),
-            "period_credit": _f(result.get("period_credit")),
-            "closing_balance": _f(result.get("closing_balance")),
-        }
-
+        account_name = str(filters.get("account_name") or "")
+        payload = build_desktop_ledger_statement_payload(
+            result,
+            account_id=account_id_int,
+            account_name=account_name,
+        )
         return {
             "success": True,
             "message": "",
-            "rows": rows,
-            "summary": summary,
-            "summary_labels": {
-                "opening_balance": "Opening Balance",
-                "period_debit": "Period Debit",
-                "period_credit": "Period Credit",
-                "closing_balance": "Closing Balance",
-            },
+            "rows": payload["rows"],
+            "summary": payload["summary"],
+            "summary_labels": payload["summary_labels"],
+            "ledger_statement_format": payload.get("ledger_statement_format"),
         }
 
     def _run_bill_history(self, company_id: int, _definition: dict[str, Any], filters: dict[str, Any]) -> dict[str, Any]:

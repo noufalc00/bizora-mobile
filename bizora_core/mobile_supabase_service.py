@@ -461,7 +461,7 @@ class MobileSupabaseService:
         parties = self._fetch_table(
             "parties",
             company_id,
-            select="id,party_type,name",
+            select="id,party_type,name,opening_balance,ledger_account_id",
             limit=1000,
         )
         entries = self._fetch_table(
