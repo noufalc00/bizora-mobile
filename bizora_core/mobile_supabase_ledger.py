@@ -7,7 +7,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Iterable, Mapping
 
-from bizora_core.mobile_report_lookups import _party_by_ledger_account
+from bizora_core.mobile_supabase_party_links import party_by_ledger_account
 
 _QUOTE_VOUCHER_TYPES = frozenset(
     {"quotation", "estimate", "quote", "Quotation", "Estimate", "Quote"}
@@ -152,7 +152,7 @@ def filter_accounts_for_view(
     view: str,
 ) -> list[dict[str, Any]]:
     """Return ledger accounts for General / Debtors / Creditors / Cash-Bank views."""
-    party_by_ledger = _party_by_ledger_account(parties, ledger_accounts)
+    party_by_ledger = party_by_ledger_account(parties, ledger_accounts)
     active_accounts = [
         row for row in ledger_accounts
         if str(row.get("is_active", 1)) not in {"0", "false", "False"}

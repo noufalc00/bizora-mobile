@@ -34,27 +34,7 @@ def _financial_years(today: Optional[date] = None) -> list[str]:
     return [f"{year}-{str(year + 1)[-2:]}" for year in range(start_year, start_year - 4, -1)]
 
 
-def _party_by_ledger_account(
-    parties: list[dict[str, Any]],
-    ledger_accounts: list[dict[str, Any]],
-) -> dict[int, dict[str, Any]]:
-    """Map ledger account ids to party rows using id link or account name."""
-    accounts_by_name = {
-        str(account.get("account_name") or "").strip().lower(): account
-        for account in ledger_accounts
-        if account.get("id") is not None
-    }
-    mapping: dict[int, dict[str, Any]] = {}
-    for party in parties:
-        ledger_account_id = party.get("ledger_account_id")
-        if ledger_account_id is not None:
-            mapping[int(ledger_account_id)] = party
-            continue
-        party_name = str(party.get("name") or "").strip().lower()
-        account = accounts_by_name.get(party_name)
-        if account and account.get("id") is not None:
-            mapping[int(account["id"])] = party
-    return mapping
+from bizora_core.mobile_supabase_party_links import party_by_ledger_account as _party_by_ledger_account
 
 
 def _unique_sorted_names(rows: list[dict[str, Any]], key: str) -> list[str]:

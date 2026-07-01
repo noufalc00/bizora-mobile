@@ -60,6 +60,9 @@ def _parse_filter_date(value: Any) -> str:
     return str(value or "")[:10]
 
 
+from bizora_core.mobile_supabase_party_links import assign_party_ledger_links
+
+
 def _fetch_parties_for_memory_db(
     fetch_table: Callable[..., list[dict[str, Any]]],
     company_id: int,
@@ -84,19 +87,7 @@ def _fetch_parties_for_memory_db(
             limit=5000,
         )
 
-    accounts_by_name = {
-        str(account.get("account_name") or "").strip().lower(): account.get("id")
-        for account in ledger_accounts
-        if account.get("id") is not None
-    }
-    enriched: list[dict[str, Any]] = []
-    for party in parties:
-        row = dict(party)
-        if row.get("ledger_account_id") in (None, ""):
-            party_name = str(row.get("name") or "").strip().lower()
-            row["ledger_account_id"] = accounts_by_name.get(party_name)
-        enriched.append(row)
-    return enriched
+    return assign_party_ledger_links(parties, ledger_accounts)
 
 
 def load_ledger_memory_db(
