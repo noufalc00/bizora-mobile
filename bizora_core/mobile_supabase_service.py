@@ -760,6 +760,27 @@ class MobileSupabaseService:
             f"slug_on_fast_path={slug_on_fast_path}{client_error}"
         )
 
+    def _prefer_desktop_bridge(self) -> bool:
+        """Return whether to attempt the heavy SQLite hydration bridge.
+
+        Cloud deployments default to the lighter in-memory ledger handlers
+        first because bridge hydration can exceed mobile fetch timeouts on
+        Render cold starts. Set MOBILE_BRIDGE_FIRST=1 to force bridge use.
+        """
+        import os
+
+        from bizora_core.mobile_supabase_desktop_bridge import desktop_bridge_available
+
+        if not desktop_bridge_available():
+            return False
+
+        mode = (os.getenv("MOBILE_BRIDGE_FIRST") or "").strip().lower()
+        if mode in {"1", "true", "yes", "on"}:
+            return True
+        if mode in {"0", "false", "no", "off"}:
+            return False
+        return False
+
     def run_report(
         self,
         slug: str,
@@ -770,9 +791,9 @@ class MobileSupabaseService:
 
         Report dispatch order:
             1. Fast-path RPC (Supabase views + `f_*` functions).
-            2. Desktop SQLite hydration bridge (same handlers as desktop app).
-            3. Cloud Python handlers (`mobile_supabase_report_handlers`).
-            4. Simple table fetch + filter for mapped Supabase tables.
+            2. Cloud Python handlers (`mobile_supabase_report_handlers`).
+            3. Simple table fetch + filter for mapped Supabase tables.
+            4. Desktop SQLite hydration bridge when enabled (optional).
             5. Friendly unsupported message on cloud-only deployments.
         """
         definition = get_route_definition(slug)
@@ -806,20 +827,6 @@ class MobileSupabaseService:
         if fast_result is not None:
             return fast_result
 
-        if desktop_bridge_available():
-            bridge_result = run_report_via_desktop_bridge(
-                self,
-                slug,
-                report_filters,
-                company_id,
-            )
-            if bridge_result.get("success"):
-                return bridge_result
-            print(
-                f"DEBUG: Desktop bridge did not serve slug='{slug}' "
-                f"company_id={resolved_id}: {bridge_result.get('message', '')}"
-            )
-
         from bizora_core.mobile_supabase_report_handlers import run_cloud_handler_report
 
         cloud_result = run_cloud_handler_report(
@@ -841,6 +848,20 @@ class MobileSupabaseService:
             )
             if table_result is not None:
                 return table_result
+
+        if self._prefer_desktop_bridge():
+            bridge_result = run_report_via_desktop_bridge(
+                self,
+                slug,
+                report_filters,
+                company_id,
+            )
+            if bridge_result.get("success"):
+                return bridge_result
+            print(
+                f"DEBUG: Desktop bridge did not serve slug='{slug}' "
+                f"company_id={resolved_id}: {bridge_result.get('message', '')}"
+            )
 
         if slug in FAST_PATH_HANDLERS:
             bridge_reason = "RPC_FAILED_OR_MISSING"

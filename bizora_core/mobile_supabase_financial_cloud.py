@@ -15,6 +15,18 @@ def _parse_date(value: Any) -> str:
     return str(value or "").strip()[:10]
 
 
+def _parse_iso_date(value: Any, fallback: date | None = None) -> date:
+    """Parse one filter date safely for cloud financial reports."""
+    fallback = fallback or date.today()
+    text = _parse_date(value)
+    if not text:
+        return fallback
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        return fallback
+
+
 def _finish(slug: str, rows: list[dict[str, Any]], filters: dict[str, Any], handler: str, **extra: Any) -> dict[str, Any]:
     """Attach desktop column metadata to one cloud report result."""
     table_payload = build_slug_table_payload(
@@ -189,8 +201,8 @@ def run_cloud_ledger_desktop_parity(
 
     memory_db = load_ledger_memory_db(fetch_table, company_id)
     logic = LedgerLogic(memory_db)
-    from_dt = date.fromisoformat(_parse_date(filters.get("from_date") or date.today()))
-    to_dt = date.fromisoformat(_parse_date(filters.get("to_date") or date.today()))
+    from_dt = _parse_iso_date(filters.get("from_date"))
+    to_dt = _parse_iso_date(filters.get("to_date"))
     view = str(filters.get("ledger_view") or "General")
 
     try:

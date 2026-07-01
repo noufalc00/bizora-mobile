@@ -5,7 +5,8 @@
   const SESSION_KEY = "bizora_mobile_session";
   const LAST_NORMAL_COMPANY_KEY = "bizora_mobile_last_normal_company";
   const LAST_NORMAL_COMPANY_DATA_KEY = "bizora_mobile_last_normal_company_data";
-  const FETCH_TIMEOUT_MS = 60000;
+  const FETCH_TIMEOUT_MS =
+    window.location.hostname.indexOf("onrender.com") >= 0 ? 120000 : 60000;
   const LOGO_LONG_PRESS_MS = 800;
 
   const storage = {
@@ -1282,7 +1283,11 @@
     el.main.innerHTML = '<div class="empty-state">Loading report...</div>';
 
     try {
-      const meta = await apiGet(`/api/reports/${slug}/meta`);
+      const companyId = state.session && state.session.company_id;
+      const metaPath = companyId
+        ? `/api/reports/${slug}/meta?company_id=${encodeURIComponent(companyId)}`
+        : `/api/reports/${slug}/meta`;
+      const meta = await apiGet(metaPath);
       const route = meta.route || {};
       const filters = route.filters || [];
       const fields = filters.map((filter) => buildFilterField(filter, meta.lookups || {}, slug)).join("");
