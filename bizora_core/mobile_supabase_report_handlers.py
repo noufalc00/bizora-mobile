@@ -213,33 +213,10 @@ def run_cloud_ledger_summary(
     company_id: int,
     filters: dict[str, Any],
 ) -> dict[str, Any]:
-    """Run ledger summary views with desktop columns."""
-    from_dt = date.fromisoformat(_parse_date(filters.get("from_date") or date.today()))
-    to_dt = date.fromisoformat(_parse_date(filters.get("to_date") or date.today()))
-    view = str(filters.get("ledger_view") or "General")
+    """Run ledger summary views with the same LedgerLogic layer as desktop."""
+    from bizora_core.mobile_supabase_financial_cloud import run_cloud_ledger_desktop_parity
 
-    ledger_accounts = fetch_table(
-        "ledger_accounts",
-        company_id,
-        select="id,company_id,account_name,account_type,group_name,opening_balance,opening_balance_type,is_active",
-        limit=2000,
-    )
-    parties = fetch_table("parties", company_id, select="id,party_type,name", limit=2000)
-    entries = fetch_table(
-        "ledger_entries",
-        company_id,
-        select="company_id,account_id,voucher_type,voucher_date,debit,credit",
-        limit=15000,
-        order_col="voucher_date",
-    )
-    accounts = filter_accounts_for_view(ledger_accounts, parties, view)
-    rows = build_account_summary(accounts, entries, company_id, from_dt, to_dt)
-
-    search = str(filters.get("search") or "").strip().lower()
-    if search:
-        rows = [row for row in rows if search in str(row.get("account_name", "")).lower()]
-
-    return _finish("ledger", rows, filters, "ledger")
+    return run_cloud_ledger_desktop_parity(fetch_table, company_id, filters)
 
 
 def _split_opening_closing(row: dict[str, Any]) -> dict[str, Any]:
@@ -502,6 +479,28 @@ def run_cloud_gst_report(
     return _finish(slug, rows, filters, handler)
 
 
+def run_cloud_profit_and_loss_handler(
+    fetch_table: Callable[..., list[dict[str, Any]]],
+    company_id: int,
+    filters: dict[str, Any],
+) -> dict[str, Any]:
+    """Desktop-parity Profit and Loss for cloud mode."""
+    from bizora_core.mobile_supabase_financial_cloud import run_cloud_profit_and_loss
+
+    return run_cloud_profit_and_loss(fetch_table, company_id, filters)
+
+
+def run_cloud_balance_sheet_handler(
+    fetch_table: Callable[..., list[dict[str, Any]]],
+    company_id: int,
+    filters: dict[str, Any],
+) -> dict[str, Any]:
+    """Desktop-parity Balance Sheet for cloud mode."""
+    from bizora_core.mobile_supabase_financial_cloud import run_cloud_balance_sheet
+
+    return run_cloud_balance_sheet(fetch_table, company_id, filters)
+
+
 def run_cloud_handler_report(
     handler: str,
     slug: str,
@@ -525,6 +524,8 @@ def run_cloud_handler_report(
         "price_list": lambda: run_cloud_products_report(slug, fetch_table, company_id, filters, handler),
         "gst_sales_report": lambda: run_cloud_gst_report(slug, fetch_table, company_id, filters, handler),
         "gst_purchase_report": lambda: run_cloud_gst_report(slug, fetch_table, company_id, filters, handler),
+        "profit_and_loss": lambda: run_cloud_profit_and_loss_handler(fetch_table, company_id, filters),
+        "balance_sheet": lambda: run_cloud_balance_sheet_handler(fetch_table, company_id, filters),
     }
     runner = handlers.get(handler)
     if runner is None:

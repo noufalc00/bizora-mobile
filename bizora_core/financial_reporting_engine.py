@@ -1,7 +1,12 @@
-from typing import Optional, Dict, List, Any
+from __future__ import annotations
+
 from datetime import date
-from db import Database
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
 from bizora_core.common_finance import to_decimal, money_round, is_balanced
+
+if TYPE_CHECKING:
+    from db import Database
 
 # Account type → display category mapping
 _TYPE_CATEGORY = {
@@ -29,7 +34,7 @@ FILTER_MAP = {
 }
 
 class FinancialReportingEngine:
-    def __init__(self, db: Database):
+    def __init__(self, db: Any):
         self.db = db
 
     @staticmethod

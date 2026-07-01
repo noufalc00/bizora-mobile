@@ -83,9 +83,16 @@ def main() -> int:
         ("trial-balance", "/api/reports/trial-balance/run"),
         ("day-book", "/api/reports/day-book/run"),
         ("ledger", "/api/reports/ledger/run"),
+        ("profit-and-loss-account", "/api/reports/profit-and-loss-account/run"),
+        ("balance-sheet", "/api/reports/balance-sheet/run", {"as_of_date": TO_DATE}),
     ]
-    for slug, legacy_path in checks:
-        status_code, payload = _post(legacy_path, {"filters": filters})
+    for entry in checks:
+        slug = entry[0]
+        legacy_path = entry[1]
+        report_filters = dict(filters)
+        if len(entry) > 2:
+            report_filters.update(entry[2])
+        status_code, payload = _post(legacy_path, {"filters": report_filters})
         success = bool(payload.get("success"))
         rows = len(payload.get("rows") or [])
         message = str(payload.get("message") or "")[:90]
