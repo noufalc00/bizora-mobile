@@ -9,10 +9,17 @@ web app never surfaces partial data.
 
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime
 from typing import Any, Callable
 
 from bizora_core.mobile_report_columns import build_slug_table_payload
+
+# Structured logger so FastAPI/uvicorn can route these to the same
+# handlers as everything else. `print` calls remain for parity with the
+# rest of the codebase; drop the print calls once the whole app has
+# migrated to logging.
+log = logging.getLogger("bizora.mobile.fast_reports")
 
 # Route slug -> RPC handler dispatcher key.
 FAST_PATH_HANDLERS: dict[str, str] = {
@@ -23,6 +30,104 @@ FAST_PATH_HANDLERS: dict[str, str] = {
 
 class FastPathUnavailable(RuntimeError):
     """Raised when a Supabase RPC is missing so callers can fall back."""
+
+
+# ---- error classification helpers -----------------------------------------
+
+def _extract_error_meta(exc: BaseException) -> dict[str, Any]:
+    """Pull code / message / status / details out of any RPC exception shape.
+
+    supabase-py 2.x raises `postgrest.exceptions.APIError` which is dict-like
+    (code / message / hint / details). httpx / requests raise their own
+    exception types. Wrap everything into a normalized dict so downstream
+    classification can inspect a single shape.
+    """
+    meta: dict[str, Any] = {
+        "type": type(exc).__name__,
+        "message": str(exc),
+        "code": None,
+        "status": None,
+        "hint": None,
+        "details": None,
+    }
+
+    # supabase-py APIError: attributes vary across versions - try both.
+    for attr in ("code", "status_code", "hint", "details", "message"):
+        value = getattr(exc, attr, None)
+        if value not in (None, ""):
+            meta[attr if attr != "status_code" else "status"] = value
+
+    # Some drivers stash the payload on .args[0] as a dict.
+    if not meta["code"] and exc.args and isinstance(exc.args[0], dict):
+        payload = exc.args[0]
+        for key in ("code", "message", "hint", "details"):
+            if payload.get(key) not in (None, ""):
+                meta[key] = payload[key]
+        if payload.get("status") and not meta["status"]:
+            meta["status"] = payload["status"]
+
+    # httpx response wrappers occasionally attach .response.
+    response = getattr(exc, "response", None)
+    if response is not None:
+        status = getattr(response, "status_code", None)
+        if status and not meta["status"]:
+            meta["status"] = status
+
+    return meta
+
+
+def _classify_rpc_error(exc: BaseException) -> str:
+    """Return a short category tag for one RPC exception.
+
+    Categories:
+        TIMEOUT           - request timed out on network or Postgres side
+        UNAUTHORIZED      - 401 / invalid JWT / missing API key
+        FORBIDDEN         - 403 / RLS violation / insufficient privilege
+        NOT_INSTALLED     - PGRST202 (schema cache says function is missing)
+        DB_ERROR          - Postgres SQLSTATE / 5xx / query structure error
+        NETWORK           - connection refused, DNS, TLS handshake
+        UNKNOWN           - fall-through for surprising exceptions
+    """
+    meta = _extract_error_meta(exc)
+    message = (meta.get("message") or "").lower()
+    code = str(meta.get("code") or "").upper()
+    status = meta.get("status")
+
+    if isinstance(exc, TimeoutError) or "timeout" in message or "timed out" in message:
+        return "TIMEOUT"
+    if status == 401 or code in {"PGRST301", "PGRST303"} or "jwt" in message or "unauthorized" in message or "invalid api key" in message:
+        return "UNAUTHORIZED"
+    if status == 403 or code == "42501" or "row-level security" in message or "forbidden" in message:
+        return "FORBIDDEN"
+    if code == "PGRST202" or "could not find the function" in message:
+        return "NOT_INSTALLED"
+    if isinstance(status, int) and 500 <= status < 600:
+        return "DB_ERROR"
+    # PostgreSQL SQLSTATE is 5 alphanumeric characters, e.g. 42P01, 23505, 08006.
+    # PostgREST codes (PGRST202 / PGRST301) are 8 chars so this doesn't collide.
+    if len(code) == 5 and code.isalnum():
+        return "DB_ERROR"
+    if "structure of query does not match" in message or "ambiguous" in message or "syntax error" in message:
+        return "DB_ERROR"
+    if isinstance(exc, (ConnectionError, OSError)) and not status:
+        return "NETWORK"
+    if "connection refused" in message or "name resolution" in message or "handshake" in message:
+        return "NETWORK"
+    return "UNKNOWN"
+
+
+def _describe_rpc_failure(rpc_name: str, params: dict[str, Any], exc: BaseException) -> str:
+    """Build a compact, log-safe one-liner describing an RPC failure."""
+    meta = _extract_error_meta(exc)
+    category = _classify_rpc_error(exc)
+    # Redact any obviously sensitive param values (search terms with PII, etc).
+    safe_params = {key: value for key, value in params.items() if key != "p_search"}
+    return (
+        f"category={category} rpc='{rpc_name}' "
+        f"exc={meta['type']} status={meta.get('status')} code={meta.get('code')} "
+        f"message={meta.get('message')!r} hint={meta.get('hint')!r} "
+        f"params={safe_params}"
+    )
 
 
 def _parse_iso(value: Any, fallback: date | None = None) -> str:
@@ -36,13 +141,32 @@ def _parse_iso(value: Any, fallback: date | None = None) -> str:
 
 
 def _call_rpc(client: Any, name: str, params: dict[str, Any]) -> list[dict[str, Any]]:
-    """Invoke a Postgres RPC through Supabase, mapping missing RPCs to a fallback."""
+    """Invoke a Postgres RPC through Supabase, mapping missing RPCs to a fallback.
+
+    Every failure path emits a structured `FAST-PATH RPC ERROR` log line
+    that includes a classification tag (TIMEOUT / UNAUTHORIZED / FORBIDDEN
+    / NOT_INSTALLED / DB_ERROR / NETWORK / UNKNOWN) so operators can
+    triage from the log without repro. Missing RPCs are re-raised as
+    `FastPathUnavailable` so callers can silently fall back to the bridge.
+    """
     try:
         response = client.rpc(name, params).execute()
     except Exception as exc:
-        message = str(exc)
-        if "Could not find the function" in message or "PGRST202" in message:
+        details = _describe_rpc_failure(name, params, exc)
+        category = _classify_rpc_error(exc)
+        if category == "NOT_INSTALLED":
+            # Expected condition when a project hasn't run the master
+            # SQL script yet - log at INFO so it doesn't wake anyone up.
+            print(f"[MOBILE-FAST] FAST-PATH RPC NOT INSTALLED ({details}); falling back to bridge.")
+            log.info("fast-path rpc not installed: %s", details)
             raise FastPathUnavailable(name) from exc
+
+        # Every other category is unexpected. Print for stdout consumers
+        # (dev / basic FastAPI) plus a structured error log with the full
+        # traceback for aggregators (prod). The outer `try_run_fast_report`
+        # will *not* re-log the traceback so we stay noise-free.
+        print(f"[MOBILE-FAST] FAST-PATH RPC ERROR: {details}")
+        log.error("fast-path rpc failed: %s", details, exc_info=exc)
         raise
     return response.data or []
 
@@ -254,9 +378,18 @@ def try_run_fast_report(
     company_id: int,
     filters: dict[str, Any],
 ) -> dict[str, Any] | None:
-    """Run one fast-path report or return None so the caller falls back."""
+    """Run one fast-path report or return None so the caller falls back.
+
+    Every exit reason is logged with an explicit tag so we can trace why
+    a given request bypassed the fast path:
+        - SKIPPED           : slug is not on the fast-path allow list
+        - RPC_NOT_INSTALLED : function missing on Supabase (expected)
+        - RPC_ERROR         : anything else that came back from PostgREST
+        - HANDLER_ERROR     : the fast-path handler itself blew up in Python
+    """
     handler_key = FAST_PATH_HANDLERS.get(slug)
     if not handler_key:
+        log.debug("fast-path SKIPPED for '%s' (no handler mapped)", slug)
         return None
     client = client_factory()
     try:
@@ -267,10 +400,20 @@ def try_run_fast_report(
         else:
             return None
     except FastPathUnavailable as exc:
-        print(f"[MOBILE-FAST] RPC '{exc}' missing; falling back to SQLite bridge.")
+        # _call_rpc already logged category=NOT_INSTALLED for us; here we
+        # just add the slug context so the two lines line up in the log.
+        print(f"[MOBILE-FAST] slug='{slug}' RPC_NOT_INSTALLED rpc='{exc}'; using bridge.")
+        log.info("fast-path RPC_NOT_INSTALLED slug=%s rpc=%s", slug, exc)
         return None
     except Exception as exc:
-        print(f"[MOBILE-FAST] '{slug}' fast-path failed: {exc}")
+        # _call_rpc already emitted the traceback via log.error(exc_info=exc).
+        # Here we just add a slug-scoped summary so operators can grep by slug.
+        category = _classify_rpc_error(exc)
+        print(
+            f"[MOBILE-FAST] FAST-PATH RPC ERROR: slug='{slug}' category={category} "
+            f"exc={type(exc).__name__} message={str(exc)!r}"
+        )
+        log.error("fast-path failed slug=%s category=%s exc=%s", slug, category, exc)
         return None
 
     payload = build_slug_table_payload(slug, result.get("rows") or [], handler=handler_key, filters=filters)

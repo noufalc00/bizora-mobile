@@ -657,14 +657,27 @@ class MobileSupabaseService:
         filters: Optional[dict[str, Any]] = None,
         company_id: Optional[int] = None,
     ) -> dict[str, Any]:
-        """Run a cloud report using desktop logic on synced Supabase data."""
+        """Run a cloud report using desktop logic on synced Supabase data.
+
+        Report dispatch order:
+            1. Fast-path RPC (Supabase views + `f_*` functions).
+            2. Desktop SQLite hydration bridge, if the module is available.
+
+        Every fast-path miss is logged with the exception class and a
+        category tag (see `mobile_supabase_fast_reports._classify_rpc_error`)
+        so we can see whether the fallback happened because the RPC was
+        missing, timed out, was unauthorized, or genuinely errored.
+        """
         definition = get_route_definition(slug)
         if definition is None:
             return {"success": False, "message": f"Unknown route: {slug}", "rows": []}
 
         resolved_id = self.resolve_company_id(company_id)
         if resolved_id is not None:
-            from bizora_core.mobile_supabase_fast_reports import try_run_fast_report
+            from bizora_core.mobile_supabase_fast_reports import (
+                FAST_PATH_HANDLERS,
+                try_run_fast_report,
+            )
 
             fast_result = try_run_fast_report(
                 self._client,
@@ -674,6 +687,15 @@ class MobileSupabaseService:
             )
             if fast_result is not None:
                 return fast_result
+
+            # Only complain about a fast-path miss when the slug is
+            # actually mapped - unmapped slugs go straight to the bridge
+            # by design and should not spam the logs.
+            if slug in FAST_PATH_HANDLERS:
+                print(
+                    f"[MOBILE-SUPABASE] Fast-path miss for slug='{slug}' company={resolved_id}; "
+                    f"falling back to SQLite hydration bridge. See preceding FAST-PATH lines for cause."
+                )
 
         from bizora_core.mobile_supabase_desktop_bridge import run_report_via_desktop_bridge
 
