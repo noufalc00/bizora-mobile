@@ -25,6 +25,7 @@ log = logging.getLogger("bizora.mobile.fast_reports")
 FAST_PATH_HANDLERS: dict[str, str] = {
     "trial-balance": "trial_balance",
     "monthly-analysis": "monthly_analysis",
+    "cash-book": "cash_book",
 }
 
 
@@ -372,6 +373,91 @@ def _run_monthly_analysis(
     }
 
 
+def _run_cash_book(
+    client: Any,
+    company_id: int,
+    filters: dict[str, Any],
+) -> dict[str, Any]:
+    """Cash Book via `f_cash_book` RPC.
+
+    Mirrors `CashBookLogic.get_cash_book` on the desktop:
+      * cash-account is discovered inside the RPC (Cash Account, then Cash).
+      * per-entry contra-account lookup is done in SQL via a scalar
+        subquery so we don't need a Python round-trip per row.
+      * running balance and opening/total/closing figures are computed
+        server-side with window functions.
+
+    The RPC returns:
+      * `out_row_type='entry'`  rows carrying real entry data.
+      * one trailing `out_row_type='summary'` row that always exists,
+        even when the entry set is empty, so callers still receive
+        opening/closing balances.
+    """
+    from_date = _parse_iso(filters.get("from_date"))
+    to_date = _parse_iso(filters.get("to_date"))
+    raw = _call_rpc(
+        client,
+        "f_cash_book",
+        {
+            "p_company_id": int(company_id),
+            "p_from_date": from_date,
+            "p_to_date": to_date,
+        },
+    )
+
+    entries: list[dict[str, Any]] = []
+    summary = {
+        "opening_balance": 0.0,
+        "total_receipts": 0.0,
+        "total_payments": 0.0,
+        "closing_balance": 0.0,
+    }
+
+    def _f(value: Any) -> float:
+        try:
+            return float(value or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    for row in raw:
+        row_type = str(row.get("out_row_type") or "entry").strip().lower()
+        if row_type == "summary":
+            # Only the trailing summary row carries these fields.
+            summary["opening_balance"] = _f(row.get("out_opening_balance"))
+            summary["total_receipts"] = _f(row.get("out_total_receipts"))
+            summary["total_payments"] = _f(row.get("out_total_payments"))
+            summary["closing_balance"] = _f(row.get("out_closing_balance"))
+            continue
+        # Entry row: strip the `out_` prefix so downstream column
+        # rendering / QA parity finds the same keys the bridge emits.
+        entries.append(
+            {
+                "voucher_date": row.get("out_voucher_date"),
+                "voucher_no": row.get("out_voucher_no") or "",
+                "voucher_type": row.get("out_voucher_type") or "",
+                "particulars": row.get("out_particulars") or "Unknown",
+                "narration": row.get("out_narration") or "",
+                "debit": _f(row.get("out_debit")),
+                "credit": _f(row.get("out_credit")),
+                "running_balance": _f(row.get("out_running_balance")),
+            }
+        )
+
+    return {
+        "success": True,
+        "message": "",
+        "rows": entries,
+        "summary": summary,
+        "summary_labels": {
+            "opening_balance": "Opening Balance",
+            "total_receipts": "Total Receipts",
+            "total_payments": "Total Payments",
+            "closing_balance": "Closing Balance",
+        },
+        "data_source": "supabase_view",
+    }
+
+
 def try_run_fast_report(
     client_factory: Callable[[], Any],
     slug: str,
@@ -397,6 +483,8 @@ def try_run_fast_report(
             result = _run_trial_balance(client, company_id, filters)
         elif handler_key == "monthly_analysis":
             result = _run_monthly_analysis(client, company_id, filters)
+        elif handler_key == "cash_book":
+            result = _run_cash_book(client, company_id, filters)
         else:
             return None
     except FastPathUnavailable as exc:

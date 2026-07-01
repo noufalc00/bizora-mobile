@@ -313,13 +313,61 @@ class MobileWebService:
         return payload
 
     def _run_cash_book(self, company_id: int, _definition: dict[str, Any], filters: dict[str, Any]) -> dict[str, Any]:
+        """Bridge handler for Cash Book.
+
+        `CashBookLogic.get_cash_book` returns its rows under `entries` (not
+        `data`/`rows`), so the generic `_rows_from_logic_result` helper
+        silently drops them into `meta`. That was the reason the web
+        Cash Book table was empty before this fix. We extract `entries`
+        explicitly and expose the desktop summary keys (opening balance,
+        totals, closing balance) so the fast-path RPC and the bridge can
+        be compared 1:1 by the QA harness.
+        """
         from bizora_core.cash_book_logic import CashBookLogic
 
         logic = CashBookLogic(self.db)
         from_dt = date.fromisoformat(self._parse_date(filters.get("from_date")))
         to_dt = date.fromisoformat(self._parse_date(filters.get("to_date")))
         result = logic.get_cash_book(company_id, from_dt, to_dt)
-        return self._rows_from_logic_result(result)
+        if not isinstance(result, dict):
+            return {"success": False, "message": "Invalid Cash Book response", "rows": []}
+
+        # `Decimal` values from cash_book_logic serialize badly through JSON.
+        # Coerce to float here so the mobile UI (and the QA harness) sees
+        # comparable numeric types on both sides.
+        def _f(value: Any) -> float:
+            try:
+                return float(value or 0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        rows = []
+        for entry in result.get("entries") or []:
+            row = dict(entry)
+            row["debit"] = _f(row.get("debit"))
+            row["credit"] = _f(row.get("credit"))
+            row["running_balance"] = _f(row.get("running_balance"))
+            rows.append(row)
+
+        summary = {
+            "opening_balance": _f(result.get("opening_balance")),
+            "total_receipts": _f(result.get("total_receipts")),
+            "total_payments": _f(result.get("total_payments")),
+            "closing_balance": _f(result.get("closing_balance")),
+        }
+
+        return {
+            "success": bool(result.get("success", True)),
+            "message": str(result.get("message") or ""),
+            "rows": rows,
+            "summary": summary,
+            "summary_labels": {
+                "opening_balance": "Opening Balance",
+                "total_receipts": "Total Receipts",
+                "total_payments": "Total Payments",
+                "closing_balance": "Closing Balance",
+            },
+        }
 
     def _run_ledger(self, company_id: int, _definition: dict[str, Any], filters: dict[str, Any]) -> dict[str, Any]:
         from bizora_core.ledger_logic import LedgerLogic

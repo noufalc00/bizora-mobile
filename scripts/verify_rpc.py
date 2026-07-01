@@ -109,6 +109,10 @@ def main() -> int:
             "f_day_book_entries",
             {"p_company_id": COMPANY_ID, "p_from_date": FROM_DATE, "p_to_date": TO_DATE},
         ),
+        (
+            "f_cash_book",
+            {"p_company_id": COMPANY_ID, "p_from_date": FROM_DATE, "p_to_date": TO_DATE},
+        ),
     ]
 
     failed = 0

@@ -385,7 +385,205 @@ COMMENT ON FUNCTION f_day_book_entries(int, date, date) IS
 'Flat day book entries. DayBookLogic then adds daily opening/total/closing rows on top.';
 
 -- -----------------------------------------------------------------
--- 7. Sanity checks (run these once after install).
+-- 7. Cash Book RPC.
+--    Mirrors CashBookLogic.get_cash_book:
+--      * Locates 'Cash Account' (fallback 'Cash') for the company.
+--      * Opening balance = account.opening_balance (with Dr/Cr sign)
+--        plus SUM(debit-credit) of entries BEFORE p_from_date.
+--      * For each cash entry in the window, joins to the "other side"
+--        of the same voucher_no to derive `particulars`.
+--      * Running balance uses a window function so we don't need a
+--        Python loop.
+--    Return shape:
+--      * `row_type = 'entry'`  : one per ledger entry, real numbers.
+--      * `row_type = 'summary'`: always present (last row) so callers
+--        that end up with an empty entry set still receive the
+--        opening/closing balances.
+-- -----------------------------------------------------------------
+DROP FUNCTION IF EXISTS f_cash_book(int, date, date);
+CREATE OR REPLACE FUNCTION f_cash_book(
+    p_company_id int,
+    p_from_date  date,
+    p_to_date    date
+)
+RETURNS TABLE (
+    -- Column names deliberately prefixed with `out_` so they never collide
+    -- with any base-table column (ledger_accounts.opening_balance,
+    -- ledger_entries.voucher_date etc). Same pattern as f_monthly_analysis.
+    out_row_type         text,
+    out_voucher_date     date,
+    out_voucher_no       text,
+    out_voucher_type     text,
+    out_particulars      text,
+    out_narration        text,
+    out_debit            numeric,
+    out_credit           numeric,
+    out_running_balance  numeric,
+    out_opening_balance  numeric,
+    out_total_receipts   numeric,
+    out_total_payments   numeric,
+    out_closing_balance  numeric
+)
+LANGUAGE plpgsql
+STABLE
+AS $$
+DECLARE
+    v_cash_id  int;
+    v_opening  numeric := 0;
+    v_ob_amt   numeric := 0;
+    v_ob_type  text    := 'Dr';
+BEGIN
+    -- Locate the cash account: prefer 'Cash Account', then 'Cash'.
+    SELECT la.id, COALESCE(la.opening_balance, 0), COALESCE(la.opening_balance_type, 'Dr')
+      INTO v_cash_id, v_ob_amt, v_ob_type
+      FROM ledger_accounts la
+     WHERE la.company_id = p_company_id
+       AND is_row_active(la.is_active)
+       AND la.account_name = 'Cash Account'
+     LIMIT 1;
+
+    IF v_cash_id IS NULL THEN
+        SELECT la.id, COALESCE(la.opening_balance, 0), COALESCE(la.opening_balance_type, 'Dr')
+          INTO v_cash_id, v_ob_amt, v_ob_type
+          FROM ledger_accounts la
+         WHERE la.company_id = p_company_id
+           AND is_row_active(la.is_active)
+           AND la.account_name = 'Cash'
+         LIMIT 1;
+    END IF;
+
+    IF v_cash_id IS NULL THEN
+        -- No cash account: emit a single all-zero summary row so the
+        -- caller still receives a well-formed payload.
+        RETURN QUERY SELECT
+            'summary'::text, NULL::date, NULL::text, NULL::text,
+            NULL::text, NULL::text,
+            NULL::numeric, NULL::numeric, NULL::numeric,
+            0::numeric, 0::numeric, 0::numeric, 0::numeric;
+        RETURN;
+    END IF;
+
+    -- Opening balance = signed opening + prior-period movement.
+    v_opening := CASE WHEN v_ob_type = 'Dr' THEN v_ob_amt ELSE -v_ob_amt END;
+
+    SELECT v_opening + COALESCE(SUM(ve.debit) - SUM(ve.credit), 0)::numeric
+      INTO v_opening
+      FROM v_ledger_entries_enriched ve
+     WHERE ve.company_id = p_company_id
+       AND ve.account_id = v_cash_id
+       AND ve.voucher_date::date < p_from_date;
+
+    RETURN QUERY
+    WITH cash_entries AS (
+        SELECT
+            ve.entry_id                          AS c_entry_id,
+            ve.voucher_date::date                AS c_voucher_date,
+            COALESCE(ve.voucher_no, '')::text    AS c_voucher_no,
+            COALESCE(ve.voucher_type, '')::text  AS c_voucher_type,
+            COALESCE(ve.narration, '')::text     AS c_narration,
+            COALESCE(ve.debit, 0)::numeric       AS c_debit,
+            COALESCE(ve.credit, 0)::numeric      AS c_credit
+        FROM v_ledger_entries_enriched ve
+        WHERE ve.company_id = p_company_id
+          AND ve.account_id = v_cash_id
+          AND ve.voucher_date::date BETWEEN p_from_date AND p_to_date
+    ),
+    with_contra AS (
+        SELECT
+            c.*,
+            COALESCE(
+                (
+                    SELECT la.account_name::text
+                    FROM ledger_entries le2
+                    JOIN ledger_accounts la ON la.id = le2.account_id
+                    WHERE le2.company_id = p_company_id
+                      AND le2.voucher_no = c.c_voucher_no
+                      AND le2.id != c.c_entry_id
+                      AND le2.account_id != v_cash_id
+                      AND COALESCE(le2.voucher_type, '') NOT IN (
+                            'quotation', 'estimate', 'quote',
+                            'Quotation', 'Estimate', 'Quote'
+                      )
+                    LIMIT 1
+                ),
+                'Unknown'
+            ) AS c_particulars
+        FROM cash_entries c
+    ),
+    ordered AS (
+        SELECT
+            wc.*,
+            ROW_NUMBER() OVER (ORDER BY wc.c_voucher_date, wc.c_entry_id) AS c_rn
+        FROM with_contra wc
+    ),
+    with_running AS (
+        SELECT
+            o.*,
+            v_opening + SUM(o.c_debit - o.c_credit) OVER (
+                ORDER BY o.c_rn
+                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+            ) AS c_running_balance
+        FROM ordered o
+    ),
+    period_totals AS (
+        SELECT
+            COALESCE(SUM(ve.debit),  0)::numeric AS agg_receipts,
+            COALESCE(SUM(ve.credit), 0)::numeric AS agg_payments
+        FROM v_ledger_entries_enriched ve
+        WHERE ve.company_id = p_company_id
+          AND ve.account_id = v_cash_id
+          AND ve.voucher_date::date BETWEEN p_from_date AND p_to_date
+    )
+    -- Entry rows first.
+    SELECT
+        'entry'::text                            AS out_row_type,
+        w.c_voucher_date                         AS out_voucher_date,
+        w.c_voucher_no                           AS out_voucher_no,
+        w.c_voucher_type                         AS out_voucher_type,
+        w.c_particulars                          AS out_particulars,
+        w.c_narration                            AS out_narration,
+        w.c_debit                                AS out_debit,
+        w.c_credit                               AS out_credit,
+        ROUND(w.c_running_balance, 2)::numeric   AS out_running_balance,
+        NULL::numeric                            AS out_opening_balance,
+        NULL::numeric                            AS out_total_receipts,
+        NULL::numeric                            AS out_total_payments,
+        NULL::numeric                            AS out_closing_balance
+    FROM with_running w
+
+    UNION ALL
+
+    -- Always emit a summary row so callers with zero entries still get
+    -- the opening / closing balances they need.
+    SELECT
+        'summary'::text                          AS out_row_type,
+        NULL::date, NULL::text, NULL::text,
+        NULL::text, NULL::text,
+        NULL::numeric, NULL::numeric, NULL::numeric,
+        ROUND(v_opening, 2)::numeric             AS out_opening_balance,
+        ROUND(pt.agg_receipts, 2)::numeric       AS out_total_receipts,
+        ROUND(pt.agg_payments, 2)::numeric       AS out_total_payments,
+        ROUND(
+            v_opening + pt.agg_receipts - pt.agg_payments, 2
+        )::numeric                               AS out_closing_balance
+    FROM period_totals pt
+
+    -- Sort by SELECT-list ordinal so the OUT parameter name
+    -- `out_row_type` never re-enters name resolution (which triggers
+    -- SQLSTATE 42702 "column reference is ambiguous").
+    -- Column 1 is out_row_type: 'entry' < 'summary' alphabetically, so
+    -- ASC puts entry rows first and the summary row last. Column 2 is
+    -- out_voucher_date; summary row's NULL date sits at the tail.
+    ORDER BY 1 ASC, 2 ASC NULLS LAST;
+END;
+$$;
+
+COMMENT ON FUNCTION f_cash_book(int, date, date) IS
+'Cash Book mirroring CashBookLogic.get_cash_book. Returns entry rows plus a trailing summary row (row_type=summary) so opening/closing balances are always available.';
+
+
+-- -----------------------------------------------------------------
+-- 8. Sanity checks (run these once after install).
 -- -----------------------------------------------------------------
 --   select count(*) from v_ledger_entries_enriched;
 --   select * from f_trial_balance(25, '2024-04-01', '2026-06-30', 'All', null) limit 5;

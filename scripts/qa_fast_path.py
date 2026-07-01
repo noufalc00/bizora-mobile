@@ -32,6 +32,7 @@ os.environ["MOBILE_DATA_SOURCE"] = "supabase"
 from bizora_core.mobile_supabase_service import MobileSupabaseService
 from bizora_core.mobile_supabase_fast_reports import (
     FastPathUnavailable,
+    _run_cash_book,
     _run_monthly_analysis,
     _run_trial_balance,
 )
@@ -97,6 +98,11 @@ def check_rpc_connectivity(service: MobileSupabaseService, report: QAReport) -> 
             "p_to_date": TO_DATE,
         },
         "f_day_book_entries": {
+            "p_company_id": COMPANY_ID,
+            "p_from_date": FROM_DATE,
+            "p_to_date": TO_DATE,
+        },
+        "f_cash_book": {
             "p_company_id": COMPANY_ID,
             "p_from_date": FROM_DATE,
             "p_to_date": TO_DATE,
@@ -242,6 +248,94 @@ def compare_monthly_analysis(service: MobileSupabaseService, report: QAReport, s
     report.record("parity:monthly-analysis", ok, detail)
 
 
+def compare_cash_book(service: MobileSupabaseService, report: QAReport, states: dict[str, str]) -> None:
+    """Fast-path vs bridge parity for Cash Book.
+
+    Comparison strategy:
+      * Row-count parity: the RPC and bridge must return the same number
+        of entry rows for a company that has a Cash Account.
+      * Row-by-row parity on (voucher_no, voucher_date, debit, credit)
+        plus derived `running_balance`.
+      * Summary parity: opening_balance, total_receipts, total_payments,
+        closing_balance must agree within MONEY_TOL.
+    """
+    if states.get("f_cash_book") != "INSTALLED":
+        report.record("parity:cash-book", False, "SKIPPED (RPC missing)")
+        return
+    filters = {"from_date": FROM_DATE, "to_date": TO_DATE}
+    try:
+        fast = _run_cash_book(service._client(), COMPANY_ID, filters)
+    except FastPathUnavailable as exc:
+        report.record("parity:cash-book", False, f"RPC vanished mid-run: {exc}")
+        return
+    bridge = run_report_via_desktop_bridge(service, "cash-book", filters, COMPANY_ID)
+
+    fast_rows = fast.get("rows") or []
+    bridge_rows = bridge.get("rows") or []
+    if len(fast_rows) != len(bridge_rows):
+        report.record(
+            "parity:cash-book",
+            False,
+            f"row count fast={len(fast_rows)} bridge={len(bridge_rows)}",
+        )
+        return
+
+    mismatches: list[str] = []
+
+    def _norm_date(value: Any) -> str:
+        text = str(value or "").strip()
+        return text[:10]
+
+    # Pair rows positionally after sorting by (voucher_date, voucher_no)
+    # so the two orderings converge even if one side used voucher_no as
+    # a secondary sort key.
+    def _sort_key(row: dict[str, Any]) -> tuple[str, str]:
+        return (_norm_date(row.get("voucher_date")), str(row.get("voucher_no") or ""))
+
+    fast_sorted = sorted(fast_rows, key=_sort_key)
+    bridge_sorted = sorted(bridge_rows, key=_sort_key)
+
+    entry_money_keys = ["debit", "credit", "running_balance"]
+    for idx, (fast_row, bridge_row) in enumerate(zip(fast_sorted, bridge_sorted)):
+        fast_date = _norm_date(fast_row.get("voucher_date"))
+        bridge_date = _norm_date(bridge_row.get("voucher_date"))
+        if fast_date != bridge_date:
+            mismatches.append(f"row {idx} date fast={fast_date} bridge={bridge_date}")
+            continue
+        if str(fast_row.get("voucher_no") or "") != str(bridge_row.get("voucher_no") or ""):
+            mismatches.append(
+                f"row {idx} voucher_no fast={fast_row.get('voucher_no')} "
+                f"bridge={bridge_row.get('voucher_no')}"
+            )
+            continue
+        for key in entry_money_keys:
+            delta = _diff_money(fast_row.get(key), bridge_row.get(key))
+            if delta > MONEY_TOL:
+                mismatches.append(
+                    f"row {idx} {key}: fast={fast_row.get(key)} bridge={bridge_row.get(key)} "
+                    f"delta={delta:.2f}"
+                )
+
+    # Summary parity.
+    fast_summary = fast.get("summary") or {}
+    bridge_summary = bridge.get("summary") or {}
+    for key in ("opening_balance", "total_receipts", "total_payments", "closing_balance"):
+        delta = _diff_money(fast_summary.get(key), bridge_summary.get(key))
+        if delta > MONEY_TOL:
+            mismatches.append(
+                f"summary {key}: fast={fast_summary.get(key)} bridge={bridge_summary.get(key)} "
+                f"delta={delta:.2f}"
+            )
+
+    ok = not mismatches
+    detail = (
+        f"identical ({len(fast_sorted)} entries)"
+        if ok
+        else f"{len(mismatches)} diffs; first: {mismatches[0]}"
+    )
+    report.record("parity:cash-book", ok, detail)
+
+
 def check_fallback_resilience(service: MobileSupabaseService, report: QAReport) -> None:
     """Simulate a fast-path timeout and confirm the bridge still serves data."""
 
@@ -319,6 +413,7 @@ def main() -> int:
     states = check_rpc_connectivity(service, report)
     compare_trial_balance(service, report, states)
     compare_monthly_analysis(service, report, states)
+    compare_cash_book(service, report, states)
     check_fallback_resilience(service, report)
     scan_render_logs(report)
 

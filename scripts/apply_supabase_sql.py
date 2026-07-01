@@ -37,6 +37,7 @@ DROP_STATEMENTS = (
     "DROP FUNCTION IF EXISTS public.f_monthly_analysis(int, date, date)",
     "DROP FUNCTION IF EXISTS public.f_day_book_entries(int, date, date)",
     "DROP FUNCTION IF EXISTS public.f_trial_balance_debug(int, date, date)",
+    "DROP FUNCTION IF EXISTS public.f_cash_book(int, date, date)",
     "DROP FUNCTION IF EXISTS public.is_row_active(anyelement)",
     "DROP VIEW IF EXISTS public.v_ledger_monthly_totals CASCADE",
     "DROP VIEW IF EXISTS public.v_ledger_daily_totals CASCADE",
@@ -88,7 +89,8 @@ def main() -> int:
                     'is_row_active',
                     'f_trial_balance',
                     'f_monthly_analysis',
-                    'f_day_book_entries'
+                    'f_day_book_entries',
+                    'f_cash_book'
                 )
                 ORDER BY proname
                 """
@@ -97,7 +99,13 @@ def main() -> int:
             for name, args, returns in rows:
                 print(f"  {name:22} args=({args}) returns={returns[:80]}...")
 
-            missing = {"is_row_active", "f_trial_balance", "f_monthly_analysis", "f_day_book_entries"} - {r[0] for r in rows}
+            missing = {
+                "is_row_active",
+                "f_trial_balance",
+                "f_monthly_analysis",
+                "f_day_book_entries",
+                "f_cash_book",
+            } - {r[0] for r in rows}
             if missing:
                 print(f"MISSING functions: {missing}")
                 connection.rollback()
