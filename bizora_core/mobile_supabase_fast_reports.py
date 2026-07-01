@@ -21,12 +21,12 @@ from bizora_core.mobile_report_columns import build_slug_table_payload
 # migrated to logging.
 log = logging.getLogger("bizora.mobile.fast_reports")
 
-# Route slug -> RPC handler dispatcher key.
-FAST_PATH_HANDLERS: dict[str, str] = {
-    "trial-balance": "trial_balance",
-    "monthly-analysis": "monthly_analysis",
-    "cash-book": "cash_book",
-}
+ReportProcessor = Callable[[list[dict[str, Any]], dict[str, Any]], dict[str, Any]]
+
+
+def _handler_key(report_type: str) -> str:
+    """Return stable handler key used by report column payloads."""
+    return report_type.replace("-", "_")
 
 
 class FastPathUnavailable(RuntimeError):
@@ -172,28 +172,8 @@ def _call_rpc(client: Any, name: str, params: dict[str, Any]) -> list[dict[str, 
     return response.data or []
 
 
-def _run_trial_balance(
-    client: Any,
-    company_id: int,
-    filters: dict[str, Any],
-) -> dict[str, Any]:
-    """Trial Balance via `f_trial_balance` RPC."""
-    account_type = str(filters.get("account_type") or "All").strip() or "All"
-    search_raw = filters.get("search")
-    search_value: str | None = str(search_raw).strip() if search_raw else None
-    if not search_value:
-        search_value = None
-    rows = _call_rpc(
-        client,
-        "f_trial_balance",
-        {
-            "p_company_id": int(company_id),
-            "p_from_date": _parse_iso(filters.get("from_date")),
-            "p_to_date": _parse_iso(filters.get("to_date")),
-            "p_account_type": account_type,
-            "p_search": search_value,
-        },
-    )
+def _process_trial_balance(rows: list[dict[str, Any]], params: dict[str, Any]) -> dict[str, Any]:
+    """Transform `f_trial_balance` rows into desktop-compatible payload."""
     for row in rows:
         row["sl_no"] = int(row.get("sl_no") or 0)
     totals: dict[str, float] = {
@@ -285,28 +265,16 @@ def _financial_year_month_keys(fy_from: str, fy_to: str) -> list[tuple[int, int]
     return keys
 
 
-def _run_monthly_analysis(
-    client: Any,
-    company_id: int,
-    filters: dict[str, Any],
-) -> dict[str, Any]:
-    """Monthly Analysis via `f_monthly_analysis` RPC.
+def _process_monthly_analysis(rows: list[dict[str, Any]], params: dict[str, Any]) -> dict[str, Any]:
+    """Transform `f_monthly_analysis` rows into desktop-compatible payload.
 
     Mirrors MonthlyAnalysisLogic on the desktop:
       * takes the financial-year window (default April to March)
       * zero-fills every month in the window, even when no ledger rows exist,
         so callers get a stable 12-row payload for the FY.
     """
-    from_date, to_date, _fy_label = _resolve_financial_year_window(filters)
-    rows = _call_rpc(
-        client,
-        "f_monthly_analysis",
-        {
-            "p_company_id": int(company_id),
-            "p_from_date": from_date,
-            "p_to_date": to_date,
-        },
-    )
+    from_date = _parse_iso(params.get("from_date"))
+    to_date = _parse_iso(params.get("to_date"))
 
     zero_row = lambda year, month: {
         "fy_year": year,
@@ -373,12 +341,8 @@ def _run_monthly_analysis(
     }
 
 
-def _run_cash_book(
-    client: Any,
-    company_id: int,
-    filters: dict[str, Any],
-) -> dict[str, Any]:
-    """Cash Book via `f_cash_book` RPC.
+def _process_cash_book(raw: list[dict[str, Any]], _params: dict[str, Any]) -> dict[str, Any]:
+    """Transform `f_cash_book` rows into desktop-compatible payload.
 
     Mirrors `CashBookLogic.get_cash_book` on the desktop:
       * cash-account is discovered inside the RPC (Cash Account, then Cash).
@@ -393,18 +357,6 @@ def _run_cash_book(
         even when the entry set is empty, so callers still receive
         opening/closing balances.
     """
-    from_date = _parse_iso(filters.get("from_date"))
-    to_date = _parse_iso(filters.get("to_date"))
-    raw = _call_rpc(
-        client,
-        "f_cash_book",
-        {
-            "p_company_id": int(company_id),
-            "p_from_date": from_date,
-            "p_to_date": to_date,
-        },
-    )
-
     entries: list[dict[str, Any]] = []
     summary = {
         "opening_balance": 0.0,
@@ -458,6 +410,203 @@ def _run_cash_book(
     }
 
 
+def _process_ledger_statement(raw: list[dict[str, Any]], params: dict[str, Any]) -> dict[str, Any]:
+    """Transform `f_ledger_statement` rows into desktop-compatible payload.
+
+    Mirrors `LedgerLogic.get_account_ledger` on the desktop (the second
+    definition at ledger_logic.py:3089, which is the one used by the
+    bridge `_run_ledger_statement`):
+      * takes an explicit account_id filter (required).
+      * opening balance = signed opening + prior-period movement.
+      * per-entry `particulars` derived server-side via contra-account
+        subquery (same pattern as f_cash_book), populating a column
+        that the bridge historically left blank.
+      * running balance computed with a window function.
+
+    Filters:
+      * `account_id`  (required) - if missing, we return a shaped error
+        payload so the dispatcher does not fall back to the bridge (the
+        bridge would return the same error anyway).
+      * `from_date`, `to_date` (required by the report definition).
+
+    Return shape matches _run_cash_book so the mobile UI can share
+    rendering code:
+      * `rows`     : list of entry dicts (voucher_date, voucher_no,
+        voucher_type, particulars, narration, debit, credit,
+        running_balance).
+      * `summary`  : {opening_balance, period_debit, period_credit,
+        closing_balance}.
+    """
+    account_id = params.get("account_id")
+    if account_id in (None, "", 0):
+        # Return-as-success avoids a bridge fallback for a purely
+        # missing-input case. The mobile UI already surfaces this
+        # message when the user hasn't picked an account yet.
+        return {
+            "success": False,
+            "message": "Account is required.",
+            "rows": [],
+            "summary": {
+                "opening_balance": 0.0,
+                "period_debit": 0.0,
+                "period_credit": 0.0,
+                "closing_balance": 0.0,
+            },
+            "summary_labels": {
+                "opening_balance": "Opening Balance",
+                "period_debit": "Period Debit",
+                "period_credit": "Period Credit",
+                "closing_balance": "Closing Balance",
+            },
+            "data_source": "supabase_view",
+        }
+
+    try:
+        account_id_int = int(account_id)
+    except (TypeError, ValueError):
+        return {
+            "success": False,
+            "message": f"Invalid account_id: {account_id!r}",
+            "rows": [],
+            "data_source": "supabase_view",
+        }
+
+    def _f(value: Any) -> float:
+        try:
+            return float(value or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    entries: list[dict[str, Any]] = []
+    summary = {
+        "opening_balance": 0.0,
+        "period_debit": 0.0,
+        "period_credit": 0.0,
+        "closing_balance": 0.0,
+    }
+
+    for row in raw:
+        row_type = str(row.get("out_row_type") or "entry").strip().lower()
+        if row_type == "summary":
+            summary["opening_balance"] = _f(row.get("out_opening_balance"))
+            summary["period_debit"] = _f(row.get("out_period_debit"))
+            summary["period_credit"] = _f(row.get("out_period_credit"))
+            summary["closing_balance"] = _f(row.get("out_closing_balance"))
+            continue
+        entries.append(
+            {
+                "voucher_date": row.get("out_voucher_date"),
+                "voucher_no": row.get("out_voucher_no") or "",
+                "voucher_type": row.get("out_voucher_type") or "",
+                "particulars": row.get("out_particulars") or "Unknown",
+                "narration": row.get("out_narration") or "",
+                "debit": _f(row.get("out_debit")),
+                "credit": _f(row.get("out_credit")),
+                "running_balance": _f(row.get("out_running_balance")),
+                "account_id": account_id_int,
+            }
+        )
+
+    return {
+        "success": True,
+        "message": "",
+        "rows": entries,
+        "summary": summary,
+        "summary_labels": {
+            "opening_balance": "Opening Balance",
+            "period_debit": "Period Debit",
+            "period_credit": "Period Credit",
+            "closing_balance": "Closing Balance",
+        },
+        "data_source": "supabase_view",
+    }
+
+
+REPORT_CONFIGS: dict[str, dict[str, Any]] = {
+    "trial-balance": {
+        "rpc": "f_trial_balance",
+        "processor": _process_trial_balance,
+    },
+    "monthly-analysis": {
+        "rpc": "f_monthly_analysis",
+        "processor": _process_monthly_analysis,
+    },
+    "cash-book": {
+        "rpc": "f_cash_book",
+        "processor": _process_cash_book,
+    },
+    "ledger-statement": {
+        "rpc": "f_ledger_statement",
+        "processor": _process_ledger_statement,
+    },
+}
+
+# Backward-compatible name used by diagnostics in service layer.
+FAST_PATH_HANDLERS: dict[str, str] = {
+    report_type: _handler_key(report_type) for report_type in REPORT_CONFIGS
+}
+
+
+def _build_rpc_params(report_type: str, params: dict[str, Any]) -> dict[str, Any]:
+    """Build RPC inputs for one report from normalized dispatcher params."""
+    company_id = int(params["company_id"])
+    filters = params.get("filters") or {}
+    from_date = _parse_iso(params.get("from_date"))
+    to_date = _parse_iso(params.get("to_date"))
+
+    if report_type == "trial-balance":
+        account_type = str(filters.get("account_type") or "All").strip() or "All"
+        search_raw = filters.get("search")
+        search_value: str | None = str(search_raw).strip() if search_raw else None
+        if not search_value:
+            search_value = None
+        return {
+            "p_company_id": company_id,
+            "p_from_date": from_date,
+            "p_to_date": to_date,
+            "p_account_type": account_type,
+            "p_search": search_value,
+        }
+    if report_type == "monthly-analysis":
+        return {
+            "p_company_id": company_id,
+            "p_from_date": from_date,
+            "p_to_date": to_date,
+        }
+    if report_type == "cash-book":
+        return {
+            "p_company_id": company_id,
+            "p_from_date": from_date,
+            "p_to_date": to_date,
+        }
+    if report_type == "ledger-statement":
+        account_id = params.get("account_id")
+        if account_id in (None, "", 0):
+            return {}
+        return {
+            "p_company_id": company_id,
+            "p_account_id": int(account_id),
+            "p_from_date": from_date,
+            "p_to_date": to_date,
+        }
+    return {}
+
+
+def get_report_data(client: Any, report_type: str, params: dict[str, Any]) -> dict[str, Any]:
+    """Generic registry dispatcher for Supabase fast-path reports."""
+    report_config = REPORT_CONFIGS.get(report_type)
+    if report_config is None:
+        raise KeyError(f"Unknown report type: {report_type}")
+
+    processor: ReportProcessor = report_config["processor"]
+    rpc_name = str(report_config["rpc"])
+    rpc_params = _build_rpc_params(report_type, params)
+    if report_type == "ledger-statement" and not rpc_params:
+        return processor([], params)
+    rows = _call_rpc(client, rpc_name, rpc_params)
+    return processor(rows, params)
+
+
 def try_run_fast_report(
     client_factory: Callable[[], Any],
     slug: str,
@@ -473,20 +622,25 @@ def try_run_fast_report(
         - RPC_ERROR         : anything else that came back from PostgREST
         - HANDLER_ERROR     : the fast-path handler itself blew up in Python
     """
-    handler_key = FAST_PATH_HANDLERS.get(slug)
-    if not handler_key:
+    if slug not in REPORT_CONFIGS:
         log.debug("fast-path SKIPPED for '%s' (no handler mapped)", slug)
         return None
     client = client_factory()
     try:
-        if handler_key == "trial_balance":
-            result = _run_trial_balance(client, company_id, filters)
-        elif handler_key == "monthly_analysis":
-            result = _run_monthly_analysis(client, company_id, filters)
-        elif handler_key == "cash_book":
-            result = _run_cash_book(client, company_id, filters)
+        params = {
+            "company_id": int(company_id),
+            "filters": filters or {},
+        }
+        if slug == "monthly-analysis":
+            from_date, to_date, _ = _resolve_financial_year_window(filters or {})
+            params["from_date"] = from_date
+            params["to_date"] = to_date
         else:
-            return None
+            params["from_date"] = _parse_iso((filters or {}).get("from_date"))
+            params["to_date"] = _parse_iso((filters or {}).get("to_date"))
+        if slug == "ledger-statement":
+            params["account_id"] = (filters or {}).get("account_id")
+        result = get_report_data(client, slug, params)
     except FastPathUnavailable as exc:
         # _call_rpc already logged category=NOT_INSTALLED for us; here we
         # just add the slug context so the two lines line up in the log.
@@ -504,5 +658,10 @@ def try_run_fast_report(
         log.error("fast-path failed slug=%s category=%s exc=%s", slug, category, exc)
         return None
 
-    payload = build_slug_table_payload(slug, result.get("rows") or [], handler=handler_key, filters=filters)
+    payload = build_slug_table_payload(
+        slug,
+        result.get("rows") or [],
+        handler=_handler_key(slug),
+        filters=filters,
+    )
     return {**result, **payload}

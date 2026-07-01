@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 from typing import Any, Optional, Protocol
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -332,6 +332,46 @@ def api_report_run(
     payload = _service.run_report(slug, body.filters, company_id=company_id)
     payload["data_source"] = _data_source
     return payload
+
+
+def _handle_report_dispatch(
+    report_type: str,
+    filters: dict[str, Any],
+    company_id: Optional[int] = Depends(_resolve_company_id_param),
+) -> dict[str, Any]:
+    """Execute one report through the generic registry dispatcher route."""
+    from bizora_core.mobile_web_registry import get_route_definition
+
+    if get_route_definition(report_type) is None:
+        raise HTTPException(status_code=404, detail=f"Unknown report type: {report_type}")
+    payload = _service.run_report(report_type, filters, company_id=company_id)
+    payload["data_source"] = _data_source
+    return payload
+
+
+@app.get("/api/reports/{report_type}")
+def handle_report(
+    report_type: str,
+    request: Request,
+    company_id: Optional[int] = Depends(_resolve_company_id_param),
+) -> dict[str, Any]:
+    """Execute one report using query-string filters on a generic route."""
+    filters = {
+        key: value
+        for key, value in request.query_params.items()
+        if key != "company_id"
+    }
+    return _handle_report_dispatch(report_type, filters, company_id)
+
+
+@app.post("/api/reports/{report_type}")
+def handle_report_post(
+    report_type: str,
+    body: ReportRequest,
+    company_id: Optional[int] = Depends(_resolve_company_id_param),
+) -> dict[str, Any]:
+    """Execute one report using JSON filters on the same generic route."""
+    return _handle_report_dispatch(report_type, body.filters, company_id)
 
 
 @app.get("/", response_class=HTMLResponse)

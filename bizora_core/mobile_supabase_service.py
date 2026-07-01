@@ -651,6 +651,61 @@ class MobileSupabaseService:
 
         return rows
 
+    def _run_cloud_table_report(
+        self,
+        slug: str,
+        company_id: int,
+        filters: dict[str, Any],
+        definition: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Fetch and filter one simple Supabase table for a cloud report slug."""
+        source = get_report_source(slug)
+        if source is None:
+            return None
+
+        from bizora_core.mobile_report_columns import build_slug_table_payload
+
+        table_name, date_col, filter_mode = source
+        order_col = date_col if date_col not in {None, "created_at"} else "created_at"
+        try:
+            rows = self._fetch_table(
+                table_name,
+                company_id,
+                select="*",
+                limit=5000,
+                order_col=order_col,
+            )
+        except Exception as exc:
+            print(f"[MOBILE-SUPABASE] Table report '{slug}' failed: {exc}")
+            return {
+                "success": False,
+                "message": f"Cloud report read failed: {exc}",
+                "rows": [],
+                "data_source": "supabase",
+            }
+
+        rows = self._apply_report_filters(
+            slug,
+            rows,
+            filters,
+            date_col,
+            filter_mode,
+            company_id,
+        )
+        table_payload = build_slug_table_payload(
+            slug,
+            rows,
+            handler=str(definition.get("handler") or slug),
+            report_mode=filters.get("report_mode"),
+            filters=filters,
+        )
+        return {
+            "success": True,
+            "message": "" if rows else "No records found for the selected filters.",
+            "data_source": "supabase",
+            **table_payload,
+        }
+
     def _debug_dispatch_state(self, slug: str, resolved_id: Optional[int]) -> None:
         """Emit a one-line snapshot of the fast-path decision inputs.
 
@@ -715,60 +770,88 @@ class MobileSupabaseService:
 
         Report dispatch order:
             1. Fast-path RPC (Supabase views + `f_*` functions).
-            2. Desktop SQLite hydration bridge, if the module is available.
-
-        Every fast-path miss is logged with the exception class and a
-        category tag (see `mobile_supabase_fast_reports._classify_rpc_error`)
-        so we can see whether the fallback happened because the RPC was
-        missing, timed out, was unauthorized, or genuinely errored. The
-        one-line dispatch snapshot printed at the top of every call also
-        exposes the environment (`SUPABASE_URL_SET`, `SERVICE_ACTIVE`,
-        `MOBILE_DATA_SOURCE`) so we can distinguish "wrong env in the
-        deployed process" from "RPC unavailable" without redeploying.
+            2. Cloud Python handlers (`mobile_supabase_report_handlers`).
+            3. Simple table fetch + filter for mapped Supabase tables.
+            4. Desktop SQLite hydration bridge, when the `db` module exists.
+            5. Friendly unsupported message on cloud-only deployments.
         """
         definition = get_route_definition(slug)
         if definition is None:
             return {"success": False, "message": f"Unknown route: {slug}", "rows": []}
 
         resolved_id = self.resolve_company_id(company_id)
+        report_filters = filters or {}
 
         # Diagnostic snapshot for Render / uvicorn logs. Cheap - one line.
         self._debug_dispatch_state(slug, resolved_id)
 
-        if resolved_id is not None:
-            from bizora_core.mobile_supabase_fast_reports import (
-                FAST_PATH_HANDLERS,
-                try_run_fast_report,
-            )
+        if resolved_id is None:
+            return {"success": False, "message": "No company found in Supabase.", "rows": []}
 
-            fast_result = try_run_fast_report(
-                self._client,
+        from bizora_core.mobile_supabase_fast_reports import (
+            FAST_PATH_HANDLERS,
+            try_run_fast_report,
+        )
+        from bizora_core.mobile_supabase_report_handlers import run_cloud_handler_report
+
+        fast_result = try_run_fast_report(
+            self._client,
+            slug,
+            resolved_id,
+            report_filters,
+        )
+        if fast_result is not None:
+            return fast_result
+
+        cloud_result = run_cloud_handler_report(
+            str(definition.get("handler") or ""),
+            slug,
+            self._fetch_table,
+            resolved_id,
+            report_filters,
+        )
+        if cloud_result is not None:
+            return cloud_result
+
+        if slug not in FAST_PATH_HANDLERS:
+            table_result = self._run_cloud_table_report(
                 slug,
                 resolved_id,
-                filters or {},
+                report_filters,
+                definition,
             )
-            if fast_result is not None:
-                return fast_result
+            if table_result is not None:
+                return table_result
 
-            # Categorize why the fast path returned None so the follow-up
-            # bridge log carries an actionable reason instead of a generic
-            # "skipped" tag. Grep `bridge_reason=` in the deployed logs
-            # to see the distribution at a glance.
-            if slug not in FAST_PATH_HANDLERS:
-                bridge_reason = "SLUG_NOT_MAPPED"
-            else:
-                bridge_reason = "RPC_FAILED_OR_MISSING"
+        if slug in FAST_PATH_HANDLERS:
+            bridge_reason = "RPC_FAILED_OR_MISSING"
         else:
-            bridge_reason = "NO_COMPANY_ID"
+            bridge_reason = "SLUG_NOT_MAPPED"
 
-        print(
-            f"DEBUG: Falling back to Bridge because Fast-Path was skipped or not enabled. "
-            f"bridge_reason={bridge_reason} slug='{slug}' company_id={resolved_id}"
+        from bizora_core.mobile_supabase_desktop_bridge import (
+            desktop_bridge_available,
+            run_report_via_desktop_bridge,
         )
 
-        from bizora_core.mobile_supabase_desktop_bridge import run_report_via_desktop_bridge
+        if desktop_bridge_available():
+            print(
+                f"DEBUG: Falling back to Bridge because cloud handlers did not serve "
+                f"this report. bridge_reason={bridge_reason} slug='{slug}' "
+                f"company_id={resolved_id}"
+            )
+            return run_report_via_desktop_bridge(self, slug, report_filters, company_id)
 
-        return run_report_via_desktop_bridge(self, slug, filters or {}, company_id)
+        print(
+            f"DEBUG: Cloud report unavailable without bridge. "
+            f"bridge_reason={bridge_reason} slug='{slug}' company_id={resolved_id}"
+        )
+        return {
+            "success": False,
+            "message": UNSUPPORTED_CLOUD_MESSAGE,
+            "rows": [],
+            "data_source": "supabase",
+            "bridge_available": False,
+        }
 
     @staticmethod
     def _empty_metrics_fallback() -> dict[str, float]:

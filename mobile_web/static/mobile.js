@@ -268,6 +268,22 @@
     return response.json();
   }
 
+  async function runReportRequest(slug, filters) {
+    const body = { filters };
+    const primaryPath = `/api/reports/${slug}`;
+    try {
+      return await apiPost(primaryPath, body);
+    } catch (error) {
+      const message = String(error || "");
+      const missingPrimaryRoute =
+        message.includes("API route not found") || message.includes("404");
+      if (!missingPrimaryRoute) {
+        throw error;
+      }
+      return apiPost(`/api/reports/${slug}/run`, body);
+    }
+  }
+
   function applyThemeTokens(payload) {
     state.theme = payload.theme || state.theme;
     state.colors = payload.colors || {};
@@ -1237,9 +1253,7 @@
     const resultRoot = document.getElementById("reportResult");
     resultRoot.innerHTML = '<div class="empty-state">Running report...</div>';
     try {
-      const payload = await apiPost(`/api/reports/${slug}/run`, {
-        filters: collectFilters(formRoot),
-      });
+      const payload = await runReportRequest(slug, collectFilters(formRoot));
       if (!payload.success) {
         resultRoot.innerHTML = `<div class="error-state">${payload.message || "Report failed."}</div>`;
         return;

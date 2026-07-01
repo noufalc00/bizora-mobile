@@ -262,6 +262,15 @@ def _get_cached_database(service: Any, company_id: int) -> tuple[Any, str]:
     return db, path
 
 
+def desktop_bridge_available() -> bool:
+    """Return True when the desktop SQLite hydration layer can be imported."""
+    try:
+        _load_desktop_layer()
+        return True
+    except ImportError:
+        return False
+
+
 def run_report_via_desktop_bridge(
     supabase_service: Any,
     slug: str,

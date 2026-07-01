@@ -32,9 +32,8 @@ os.environ["MOBILE_DATA_SOURCE"] = "supabase"
 from bizora_core.mobile_supabase_service import MobileSupabaseService
 from bizora_core.mobile_supabase_fast_reports import (
     FastPathUnavailable,
-    _run_cash_book,
-    _run_monthly_analysis,
-    _run_trial_balance,
+    REPORT_CONFIGS,
+    get_report_data,
 )
 from bizora_core.mobile_supabase_desktop_bridge import run_report_via_desktop_bridge
 
@@ -42,6 +41,10 @@ MONEY_TOL = 0.05          # rupees; matches desktop rounding tolerance
 COMPANY_ID = 25
 FROM_DATE = "2024-04-01"
 TO_DATE = "2026-06-30"
+# Well-known account for ledger-statement parity. Account 211 is
+# Capital Account for company 25 (verified by earlier trial-balance
+# runs). Override with QA_LEDGER_ACCOUNT_ID env var if needed.
+LEDGER_ACCOUNT_ID = int(os.getenv("QA_LEDGER_ACCOUNT_ID", "211"))
 
 
 class QAReport:
@@ -107,6 +110,12 @@ def check_rpc_connectivity(service: MobileSupabaseService, report: QAReport) -> 
             "p_from_date": FROM_DATE,
             "p_to_date": TO_DATE,
         },
+        "f_ledger_statement": {
+            "p_company_id": COMPANY_ID,
+            "p_account_id": LEDGER_ACCOUNT_ID,
+            "p_from_date": FROM_DATE,
+            "p_to_date": TO_DATE,
+        },
     }
     for name, params in ping_params.items():
         state, detail = _check_rpc(client, name, params)
@@ -123,6 +132,30 @@ def _diff_money(a: Any, b: Any) -> float:
         return 0.0
 
 
+def _run_registered_report(
+    service: MobileSupabaseService,
+    report_type: str,
+    filters: dict[str, Any],
+) -> dict[str, Any]:
+    """Execute one report using the generic fast-path registry dispatcher."""
+    params: dict[str, Any] = {
+        "company_id": COMPANY_ID,
+        "filters": filters,
+    }
+    if report_type == "monthly-analysis":
+        from bizora_core.mobile_supabase_fast_reports import _resolve_financial_year_window
+
+        from_date, to_date, _ = _resolve_financial_year_window(filters)
+        params["from_date"] = from_date
+        params["to_date"] = to_date
+    else:
+        params["from_date"] = filters.get("from_date")
+        params["to_date"] = filters.get("to_date")
+    if report_type == "ledger-statement":
+        params["account_id"] = filters.get("account_id")
+    return get_report_data(service._client(), report_type, params)
+
+
 def compare_trial_balance(service: MobileSupabaseService, report: QAReport, states: dict[str, str]) -> None:
     """Fast-path vs bridge parity for Trial Balance."""
     if states.get("f_trial_balance") != "INSTALLED":
@@ -135,7 +168,7 @@ def compare_trial_balance(service: MobileSupabaseService, report: QAReport, stat
         "search": "",
     }
     try:
-        fast = _run_trial_balance(service._client(), COMPANY_ID, filters)
+        fast = _run_registered_report(service, "trial-balance", filters)
     except FastPathUnavailable as exc:
         report.record("parity:trial-balance", False, f"RPC vanished mid-run: {exc}")
         return
@@ -195,7 +228,7 @@ def compare_monthly_analysis(service: MobileSupabaseService, report: QAReport, s
     fy_label = os.getenv("QA_FINANCIAL_YEAR") or "2026-27"
     filters = {"financial_year": fy_label, "from_month": "April", "to_month": "March"}
     try:
-        fast = _run_monthly_analysis(service._client(), COMPANY_ID, filters)
+        fast = _run_registered_report(service, "monthly-analysis", filters)
     except FastPathUnavailable as exc:
         report.record("parity:monthly-analysis", False, f"RPC vanished mid-run: {exc}")
         return
@@ -264,7 +297,7 @@ def compare_cash_book(service: MobileSupabaseService, report: QAReport, states: 
         return
     filters = {"from_date": FROM_DATE, "to_date": TO_DATE}
     try:
-        fast = _run_cash_book(service._client(), COMPANY_ID, filters)
+        fast = _run_registered_report(service, "cash-book", filters)
     except FastPathUnavailable as exc:
         report.record("parity:cash-book", False, f"RPC vanished mid-run: {exc}")
         return
@@ -336,6 +369,92 @@ def compare_cash_book(service: MobileSupabaseService, report: QAReport, states: 
     report.record("parity:cash-book", ok, detail)
 
 
+def compare_ledger_statement(service: MobileSupabaseService, report: QAReport, states: dict[str, str]) -> None:
+    """Fast-path vs bridge parity for Ledger Statement (single account).
+
+    Structurally identical to `compare_cash_book`. Differences:
+      * a required `account_id` filter is passed on both sides.
+      * summary keys are `period_debit` / `period_credit` (matching
+        LedgerLogic.get_account_ledger), not `total_receipts` /
+        `total_payments`.
+    """
+    if states.get("f_ledger_statement") != "INSTALLED":
+        report.record("parity:ledger-statement", False, "SKIPPED (RPC missing)")
+        return
+    filters = {
+        "from_date": FROM_DATE,
+        "to_date": TO_DATE,
+        "account_id": LEDGER_ACCOUNT_ID,
+    }
+    try:
+        fast = _run_registered_report(service, "ledger-statement", filters)
+    except FastPathUnavailable as exc:
+        report.record("parity:ledger-statement", False, f"RPC vanished mid-run: {exc}")
+        return
+    bridge = run_report_via_desktop_bridge(service, "ledger-statement", filters, COMPANY_ID)
+
+    fast_rows = fast.get("rows") or []
+    bridge_rows = bridge.get("rows") or []
+    if len(fast_rows) != len(bridge_rows):
+        report.record(
+            "parity:ledger-statement",
+            False,
+            f"row count fast={len(fast_rows)} bridge={len(bridge_rows)}",
+        )
+        return
+
+    mismatches: list[str] = []
+
+    def _norm_date(value: Any) -> str:
+        text = str(value or "").strip()
+        return text[:10]
+
+    def _sort_key(row: dict[str, Any]) -> tuple[str, str]:
+        return (_norm_date(row.get("voucher_date")), str(row.get("voucher_no") or ""))
+
+    fast_sorted = sorted(fast_rows, key=_sort_key)
+    bridge_sorted = sorted(bridge_rows, key=_sort_key)
+
+    entry_money_keys = ["debit", "credit", "running_balance"]
+    for idx, (fast_row, bridge_row) in enumerate(zip(fast_sorted, bridge_sorted)):
+        fast_date = _norm_date(fast_row.get("voucher_date"))
+        bridge_date = _norm_date(bridge_row.get("voucher_date"))
+        if fast_date != bridge_date:
+            mismatches.append(f"row {idx} date fast={fast_date} bridge={bridge_date}")
+            continue
+        if str(fast_row.get("voucher_no") or "") != str(bridge_row.get("voucher_no") or ""):
+            mismatches.append(
+                f"row {idx} voucher_no fast={fast_row.get('voucher_no')} "
+                f"bridge={bridge_row.get('voucher_no')}"
+            )
+            continue
+        for key in entry_money_keys:
+            delta = _diff_money(fast_row.get(key), bridge_row.get(key))
+            if delta > MONEY_TOL:
+                mismatches.append(
+                    f"row {idx} {key}: fast={fast_row.get(key)} bridge={bridge_row.get(key)} "
+                    f"delta={delta:.2f}"
+                )
+
+    fast_summary = fast.get("summary") or {}
+    bridge_summary = bridge.get("summary") or {}
+    for key in ("opening_balance", "period_debit", "period_credit", "closing_balance"):
+        delta = _diff_money(fast_summary.get(key), bridge_summary.get(key))
+        if delta > MONEY_TOL:
+            mismatches.append(
+                f"summary {key}: fast={fast_summary.get(key)} bridge={bridge_summary.get(key)} "
+                f"delta={delta:.2f}"
+            )
+
+    ok = not mismatches
+    detail = (
+        f"identical ({len(fast_sorted)} entries, account_id={LEDGER_ACCOUNT_ID})"
+        if ok
+        else f"{len(mismatches)} diffs; first: {mismatches[0]}"
+    )
+    report.record("parity:ledger-statement", ok, detail)
+
+
 def check_fallback_resilience(service: MobileSupabaseService, report: QAReport) -> None:
     """Simulate a fast-path timeout and confirm the bridge still serves data."""
 
@@ -398,6 +517,21 @@ def scan_render_logs(report: QAReport) -> None:
     report.record("logs:FastPathUnavailable scan", True, detail)
 
 
+def check_parity_helper_coverage(report: QAReport) -> None:
+    """Ensure each registered report has a matching compare_* parity helper."""
+    helper_names = {name for name in globals() if name.startswith("compare_")}
+    missing_helpers: list[str] = []
+    for report_slug in REPORT_CONFIGS:
+        helper_name = f"compare_{report_slug.replace('-', '_')}"
+        if helper_name not in helper_names:
+            missing_helpers.append(helper_name)
+    report.record(
+        "qa:parity helper coverage",
+        not missing_helpers,
+        "complete" if not missing_helpers else f"missing: {missing_helpers}",
+    )
+
+
 def main() -> int:
     service = MobileSupabaseService()
     report = QAReport()
@@ -414,8 +548,10 @@ def main() -> int:
     compare_trial_balance(service, report, states)
     compare_monthly_analysis(service, report, states)
     compare_cash_book(service, report, states)
+    compare_ledger_statement(service, report, states)
     check_fallback_resilience(service, report)
     scan_render_logs(report)
+    check_parity_helper_coverage(report)
 
     report.dump()
     return 1 if report.failures else 0
