@@ -757,63 +757,90 @@ class MobileSupabaseService:
             f"slug_on_fast_path={slug_on_fast_path}{client_error}"
         )
 
-    def _prefer_desktop_bridge(self) -> bool:
-        """Return whether to attempt the heavy SQLite hydration bridge.
+    def _use_full_mirror_dispatch(self) -> bool:
+        """Return True when all Books/Reports must use the desktop bridge.
 
-        Cloud deployments default to the lighter in-memory ledger handlers
-        first because bridge hydration can exceed mobile fetch timeouts on
-        Render cold starts. Set MOBILE_BRIDGE_FIRST=1 to force bridge use.
+        Full mirroring (Option 1) is the default for Supabase cloud mode so
+        mobile web runs the same ``MobileWebService`` handlers as the
+        desktop app. Set ``MOBILE_MIRROR_MODE=hybrid`` to restore the older
+        RPC/cloud-handler pipeline for debugging.
         """
         import os
 
-        from bizora_core.mobile_supabase_desktop_bridge import desktop_bridge_available
-
-        if not desktop_bridge_available():
-            return False
-
-        mode = (os.getenv("MOBILE_BRIDGE_FIRST") or "").strip().lower()
-        if mode in {"1", "true", "yes", "on"}:
+        mirror_mode = (os.getenv("MOBILE_MIRROR_MODE") or "").strip().lower()
+        if mirror_mode in {"bridge", "desktop", "full", "mirror"}:
             return True
-        if mode in {"0", "false", "no", "off"}:
+        if mirror_mode in {"hybrid", "cloud", "off", "legacy"}:
             return False
-        return False
 
-    def run_report(
+        bridge_first = (os.getenv("MOBILE_BRIDGE_FIRST") or "").strip().lower()
+        if bridge_first in {"1", "true", "yes", "on"}:
+            return True
+        if bridge_first in {"0", "false", "no", "off"}:
+            return False
+
+        data_source = (os.getenv("MOBILE_DATA_SOURCE") or "").strip().lower()
+        return data_source == "supabase"
+
+    def _run_report_via_mirror_bridge(
         self,
         slug: str,
-        filters: Optional[dict[str, Any]] = None,
-        company_id: Optional[int] = None,
+        report_filters: dict[str, Any],
+        company_id: Optional[int],
+        resolved_id: int,
     ) -> dict[str, Any]:
-        """Run a cloud report using desktop logic on synced Supabase data.
-
-        Report dispatch order:
-            1. Fast-path RPC (Supabase views + `f_*` functions).
-            2. Cloud Python handlers (`mobile_supabase_report_handlers`).
-            3. Simple table fetch + filter for mapped Supabase tables.
-            4. Desktop SQLite hydration bridge when enabled (optional).
-            5. Friendly unsupported message on cloud-only deployments.
-        """
-        definition = get_route_definition(slug)
-        if definition is None:
-            return {"success": False, "message": f"Unknown route: {slug}", "rows": []}
-
-        resolved_id = self.resolve_company_id(company_id)
-        report_filters = filters or {}
-
-        # Diagnostic snapshot for Render / uvicorn logs. Cheap - one line.
-        self._debug_dispatch_state(slug, resolved_id)
-
-        if resolved_id is None:
-            return {"success": False, "message": "No company found in Supabase.", "rows": []}
-
-        from bizora_core.mobile_supabase_fast_reports import (
-            FAST_PATH_HANDLERS,
-            try_run_fast_report,
-        )
+        """Run one report through the desktop hydration bridge only."""
         from bizora_core.mobile_supabase_desktop_bridge import (
             desktop_bridge_available,
             run_report_via_desktop_bridge,
         )
+
+        if not desktop_bridge_available():
+            print(
+                f"DEBUG: Mirror mode blocked — desktop bridge unavailable "
+                f"slug='{slug}' company_id={resolved_id}"
+            )
+            return {
+                "success": False,
+                "message": (
+                    "Desktop mirroring is enabled but the SQLite bridge is "
+                    "unavailable on this server. Ensure db.py is deployed."
+                ),
+                "rows": [],
+                "data_source": "desktop_mirror",
+                "mirror_mode": True,
+                "bridge_available": False,
+            }
+
+        print(
+            f"DEBUG: Mirror mode -> desktop bridge slug='{slug}' "
+            f"company_id={resolved_id}"
+        )
+        return run_report_via_desktop_bridge(
+            self,
+            slug,
+            report_filters,
+            company_id,
+        )
+
+    def _run_report_hybrid_fallback(
+        self,
+        slug: str,
+        report_filters: dict[str, Any],
+        company_id: Optional[int],
+        resolved_id: int,
+        definition: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Legacy hybrid dispatch: RPC, cloud handlers, table fetch, then bridge."""
+        from bizora_core.mobile_supabase_desktop_bridge import (
+            desktop_bridge_available,
+            run_report_via_desktop_bridge,
+        )
+        from bizora_core.mobile_supabase_fast_reports import (
+            FAST_PATH_HANDLERS,
+            try_run_fast_report,
+        )
+        from bizora_core.mobile_supabase_report_handlers import run_cloud_handler_report
 
         fast_result = try_run_fast_report(
             self._client,
@@ -823,8 +850,6 @@ class MobileSupabaseService:
         )
         if fast_result is not None:
             return fast_result
-
-        from bizora_core.mobile_supabase_report_handlers import run_cloud_handler_report
 
         cloud_result = run_cloud_handler_report(
             str(definition.get("handler") or ""),
@@ -846,7 +871,7 @@ class MobileSupabaseService:
             if table_result is not None:
                 return table_result
 
-        if self._prefer_desktop_bridge():
+        if desktop_bridge_available():
             bridge_result = run_report_via_desktop_bridge(
                 self,
                 slug,
@@ -856,25 +881,15 @@ class MobileSupabaseService:
             if bridge_result.get("success"):
                 return bridge_result
             print(
-                f"DEBUG: Desktop bridge did not serve slug='{slug}' "
+                f"DEBUG: Hybrid bridge fallback failed slug='{slug}' "
                 f"company_id={resolved_id}: {bridge_result.get('message', '')}"
             )
 
-        if slug in FAST_PATH_HANDLERS:
-            bridge_reason = "RPC_FAILED_OR_MISSING"
-        else:
-            bridge_reason = "SLUG_NOT_MAPPED"
-
-        if desktop_bridge_available():
-            print(
-                f"DEBUG: Cloud handlers did not serve slug='{slug}' "
-                f"company_id={resolved_id}; bridge already attempted."
-            )
-        else:
-            print(
-                f"DEBUG: Cloud report unavailable without bridge. "
-                f"bridge_reason={bridge_reason} slug='{slug}' company_id={resolved_id}"
-            )
+        bridge_reason = "RPC_FAILED_OR_MISSING" if slug in FAST_PATH_HANDLERS else "SLUG_NOT_MAPPED"
+        print(
+            f"DEBUG: Hybrid cloud report unavailable. bridge_reason={bridge_reason} "
+            f"slug='{slug}' company_id={resolved_id}"
+        )
         return {
             "success": False,
             "message": UNSUPPORTED_CLOUD_MESSAGE,
@@ -882,6 +897,52 @@ class MobileSupabaseService:
             "data_source": "supabase",
             "bridge_available": desktop_bridge_available(),
         }
+
+    def run_report(
+        self,
+        slug: str,
+        filters: Optional[dict[str, Any]] = None,
+        company_id: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Run a cloud report using desktop logic on synced Supabase data.
+
+        Default dispatch (``MOBILE_MIRROR_MODE=bridge`` / Supabase cloud):
+            1. Desktop SQLite hydration bridge + ``MobileWebService`` handlers.
+
+        Hybrid dispatch (``MOBILE_MIRROR_MODE=hybrid`` for debugging):
+            1. Fast-path RPC
+            2. Cloud Python handlers
+            3. Simple Supabase table fetch
+            4. Desktop bridge fallback
+        """
+        definition = get_route_definition(slug)
+        if definition is None:
+            return {"success": False, "message": f"Unknown route: {slug}", "rows": []}
+
+        resolved_id = self.resolve_company_id(company_id)
+        report_filters = filters or {}
+
+        # Diagnostic snapshot for Render / uvicorn logs. Cheap - one line.
+        self._debug_dispatch_state(slug, resolved_id)
+
+        if resolved_id is None:
+            return {"success": False, "message": "No company found in Supabase.", "rows": []}
+
+        if self._use_full_mirror_dispatch():
+            return self._run_report_via_mirror_bridge(
+                slug,
+                report_filters,
+                company_id,
+                resolved_id,
+            )
+
+        return self._run_report_hybrid_fallback(
+            slug,
+            report_filters,
+            company_id,
+            resolved_id,
+            definition,
+        )
 
     @staticmethod
     def _empty_metrics_fallback() -> dict[str, float]:

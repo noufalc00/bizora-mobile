@@ -5,7 +5,7 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV MOBILE_DATA_SOURCE=supabase
-ENV MOBILE_BRIDGE_FIRST=0
+ENV MOBILE_MIRROR_MODE=bridge
 
 COPY requirements-cloud.txt .
 RUN pip install --no-cache-dir -r requirements-cloud.txt

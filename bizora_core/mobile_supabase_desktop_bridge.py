@@ -347,7 +347,8 @@ def run_report_via_desktop_bridge(
     try:
         _ = database_cls  # silence unused-linter; class captured above so we validate the import
         result = mobile_web_service_cls(db=db).run_report(slug, filters, company_id=resolved_id)
-        result["data_source"] = "supabase"
+        result["data_source"] = "desktop_mirror"
+        result["mirror_mode"] = True
         return result
     except Exception as exc:
         print(f"[MOBILE-BRIDGE] Report '{slug}' failed: {exc}")

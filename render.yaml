@@ -8,6 +8,8 @@ services:
     envVars:
       - key: MOBILE_DATA_SOURCE
         value: supabase
+      - key: MOBILE_MIRROR_MODE
+        value: bridge
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_KEY
