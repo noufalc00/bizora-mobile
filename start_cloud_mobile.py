@@ -47,6 +47,28 @@ def validate_cloud_credentials() -> None:
         print("WARNING: Supabase is not configured. Set SUPABASE_URL and SUPABASE_KEY.")
 
 
+def validate_mirror_bridge() -> None:
+    """Log whether the desktop mirroring bridge can load on this server."""
+    mirror_mode = (os.getenv("MOBILE_MIRROR_MODE") or "").strip().lower()
+    data_source = (os.getenv("MOBILE_DATA_SOURCE") or "").strip().lower()
+    if mirror_mode in {"hybrid", "cloud", "off", "legacy"}:
+        return
+    if data_source != "supabase" and mirror_mode not in {"bridge", "desktop", "full", "mirror"}:
+        return
+    try:
+        from bizora_core.mobile_supabase_desktop_bridge import (
+            bridge_import_error,
+            desktop_bridge_available,
+        )
+    except Exception as exc:
+        print(f"WARNING: Could not validate mirror bridge: {exc}")
+        return
+    if desktop_bridge_available():
+        print("Mirror bridge: OK (MobileWebService + db.py loaded)")
+        return
+    print(f"ERROR: Mirror bridge failed to load: {bridge_import_error() or 'unknown'}")
+
+
 def print_cloud_banner(port: int) -> None:
     """Print cloud startup instructions."""
     public_url = (
@@ -80,5 +102,6 @@ def print_cloud_banner(port: int) -> None:
 if __name__ == "__main__":
     port = int(os.getenv("PORT", os.getenv("MOBILE_WEB_PORT", "8080")))
     validate_cloud_credentials()
+    validate_mirror_bridge()
     print_cloud_banner(port)
     uvicorn.run("mobile_api:app", host="0.0.0.0", port=port, reload=False)

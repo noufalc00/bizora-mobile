@@ -791,20 +791,22 @@ class MobileSupabaseService:
     ) -> dict[str, Any]:
         """Run one report through the desktop hydration bridge only."""
         from bizora_core.mobile_supabase_desktop_bridge import (
+            bridge_import_error,
             desktop_bridge_available,
             run_report_via_desktop_bridge,
         )
 
         if not desktop_bridge_available():
+            detail = bridge_import_error() or "unknown import failure"
             print(
                 f"DEBUG: Mirror mode blocked — desktop bridge unavailable "
-                f"slug='{slug}' company_id={resolved_id}"
+                f"slug='{slug}' company_id={resolved_id}: {detail}"
             )
             return {
                 "success": False,
                 "message": (
-                    "Desktop mirroring is enabled but the SQLite bridge is "
-                    "unavailable on this server. Ensure db.py is deployed."
+                    "Desktop mirroring is enabled but the SQLite bridge could not "
+                    f"start: {detail}"
                 ),
                 "rows": [],
                 "data_source": "desktop_mirror",

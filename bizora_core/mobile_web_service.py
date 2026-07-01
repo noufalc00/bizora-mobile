@@ -9,7 +9,6 @@ from typing import Any, Callable, Dict, List, Optional
 
 from config import CURRENCY_SYMBOL, active_company_manager
 from db import Database, get_default_database_path
-from bizora_core.dashboard_logic import DashboardLogic
 from bizora_core.mobile_report_lookups import build_local_report_lookups
 from bizora_core.mobile_report_display import build_report_table_payload
 from bizora_core.mobile_web_registry import (
@@ -49,6 +48,8 @@ class MobileWebService:
 
     def __init__(self, db: Optional[Database] = None):
         self.db = db or Database()
+        from bizora_core.dashboard_logic import DashboardLogic
+
         self.dashboard_logic = DashboardLogic(self.db)
 
     def resolve_company_id(self, override_id: Optional[int] = None) -> Optional[int]:

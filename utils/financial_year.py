@@ -5,9 +5,10 @@ Indian financial year helpers (April to March).
 from __future__ import annotations
 
 from datetime import date
-from typing import List, Optional, Tuple
+from typing import TYPE_CHECKING, List, Optional, Tuple
 
-from PySide6.QtCore import QDate
+if TYPE_CHECKING:
+    from PySide6.QtCore import QDate
 
 
 def get_current_financial_year_label(reference: Optional[date] = None) -> str:
@@ -41,8 +42,10 @@ def get_financial_year_date_range(financial_year_label: str) -> Tuple[date, date
     return date(start_year, 4, 1), date(end_year, 3, 31)
 
 
-def get_financial_year_qdate_range(financial_year_label: str) -> Tuple[QDate, QDate]:
+def get_financial_year_qdate_range(financial_year_label: str) -> Tuple["QDate", "QDate"]:
     """Return inclusive QDate range for an Indian FY label."""
+    from PySide6.QtCore import QDate
+
     start_date, end_date = get_financial_year_date_range(financial_year_label)
     return (
         QDate(start_date.year, start_date.month, start_date.day),
@@ -67,7 +70,7 @@ def get_working_financial_year_label() -> Optional[str]:
     return None
 
 
-def is_qdate_in_financial_year(qdate: QDate, financial_year_label: str) -> bool:
+def is_qdate_in_financial_year(qdate: "QDate", financial_year_label: str) -> bool:
     """Return True when the QDate falls inside the given FY."""
     start_date, end_date = get_financial_year_qdate_range(financial_year_label)
     return start_date <= qdate <= end_date

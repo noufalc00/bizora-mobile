@@ -102,6 +102,12 @@ _CACHE_LOCK = Lock()
 # Any = desktop Database class; forward-ref intentionally, see _load_desktop_layer.
 _DB_CACHE: dict[int, tuple[float, str, Any]] = {}
 _CACHE_TTL_SECONDS = 180
+_LAST_BRIDGE_IMPORT_ERROR: str | None = None
+
+
+def bridge_import_error() -> str | None:
+    """Return the last ImportError message when the desktop layer failed to load."""
+    return _LAST_BRIDGE_IMPORT_ERROR
 
 
 def _batch_fetch_child_rows(
@@ -283,10 +289,14 @@ def _get_cached_database(service: Any, company_id: int) -> tuple[Any, str]:
 
 def desktop_bridge_available() -> bool:
     """Return True when the desktop SQLite hydration layer can be imported."""
+    global _LAST_BRIDGE_IMPORT_ERROR
     try:
         _load_desktop_layer()
+        _LAST_BRIDGE_IMPORT_ERROR = None
         return True
-    except ImportError:
+    except ImportError as exc:
+        _LAST_BRIDGE_IMPORT_ERROR = str(exc)
+        print(f"[MOBILE-BRIDGE] Desktop layer unavailable: {exc}")
         return False
 
 
