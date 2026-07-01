@@ -386,12 +386,9 @@ class MobileWebService:
         else:
             rows = logic.get_general_account_summary(company_id, from_dt, to_dt)
 
-        search = str(filters.get("search") or "").strip().lower()
-        if search:
-            rows = [
-                row for row in rows
-                if search in str(row.get("account_name", "")).lower()
-            ]
+        from bizora_core.mobile_supabase_ledger import filter_ledger_summary_rows
+
+        rows = filter_ledger_summary_rows(rows, filters.get("search"))
         return {"success": True, "message": "", "rows": rows}
 
     def _run_ledger_statement(self, company_id: int, _definition: dict[str, Any], filters: dict[str, Any]) -> dict[str, Any]:

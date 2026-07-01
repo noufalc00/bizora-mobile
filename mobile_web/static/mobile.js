@@ -861,12 +861,19 @@
     return lookups.ledger_general || [];
   }
 
-  function buildLookupSelect(filter, options, labelKey, emptyLabel) {
+  function buildLookupSelect(filter, options, labelKey, emptyLabel, valueKey) {
     const fieldId = `filter-${filter.key}`;
     const optionRows = (options || [])
       .map((option) => {
         const label = typeof option === "string" ? option : option[labelKey];
-        const value = typeof option === "string" ? option : (option.value != null ? option.value : label);
+        let value = label;
+        if (typeof option !== "string") {
+          if (valueKey && option[valueKey] != null && option[valueKey] !== "") {
+            value = option[valueKey];
+          } else if (option.value != null && option.value !== "") {
+            value = option.value;
+          }
+        }
         if (!label) {
           return "";
         }
@@ -906,7 +913,7 @@
     if (slug === "ledger" && filter.key === "search") {
       const ledgerView = (document.getElementById("filter-ledger_view") || {}).value || "General";
       const options = resolveLedgerSearchOptions(lookups, ledgerView);
-      return buildLookupSelect(filter, options, "name", "All Accounts");
+      return buildLookupSelect(filter, options, "name", "All Accounts", "id");
     }
     if (slug === "purchase-order-book" && filter.key === "search" && (lookups.creditors_po || []).length) {
       return buildLookupSelect(

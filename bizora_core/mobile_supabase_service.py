@@ -474,12 +474,9 @@ class MobileSupabaseService:
         accounts = filter_accounts_for_view(ledger_accounts, parties, view)
         rows = build_account_summary(accounts, entries, company_id, from_date, to_date)
 
-        search = str(filters.get("search") or "").strip().lower()
-        if search:
-            rows = [
-                row for row in rows
-                if search in str(row.get("account_name", "")).lower()
-            ]
+        from bizora_core.mobile_supabase_ledger import filter_ledger_summary_rows
+
+        rows = filter_ledger_summary_rows(rows, filters.get("search"))
         return {"success": True, "message": "", "rows": rows, "data_source": "supabase"}
 
     def _apply_report_filters(

@@ -146,6 +146,33 @@ def build_account_summary(
     return summary
 
 
+def filter_ledger_summary_rows(
+    rows: list[dict[str, Any]],
+    account_filter: Any,
+) -> list[dict[str, Any]]:
+    """Filter ledger summary rows by one desktop account selection.
+
+    The mobile ledger account dropdown sends a ledger ``account_id``. Older
+    clients may still send an account name; in that case use an exact name
+    match (case-sensitive) like the desktop account picker, never substring.
+    """
+    search = str(account_filter or "").strip()
+    if not search:
+        return rows
+
+    if search.isdigit():
+        account_id = int(search)
+        return [
+            row for row in rows
+            if int(row.get("id") or 0) == account_id
+        ]
+
+    return [
+        row for row in rows
+        if str(row.get("account_name") or "") == search
+    ]
+
+
 def filter_accounts_for_view(
     ledger_accounts: list[dict[str, Any]],
     parties: list[dict[str, Any]],

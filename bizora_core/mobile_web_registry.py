@@ -111,7 +111,15 @@ ROUTE_DEFINITIONS: dict[str, dict[str, Any]] = {
         {"key": "summarize_creditors", "label": "Summarize Creditors", "type": "boolean", "default": False},
     )),
     "cash-book": _route("Cash Book", "Books", "cash_book"),
-    "ledger": _route("Ledger", "Books", "ledger", filters=STANDARD_DATE_FILTERS + (LEDGER_VIEW_FILTER, SEARCH_FILTER)),
+    "ledger": _route(
+        "Ledger",
+        "Books",
+        "ledger",
+        filters=STANDARD_DATE_FILTERS + (
+            LEDGER_VIEW_FILTER,
+            {"key": "search", "label": "Account", "type": "account", "required": False},
+        ),
+    ),
     "ledger-statement": _route(
         "Ledger Statement",
         "Books",

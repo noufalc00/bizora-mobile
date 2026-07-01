@@ -223,9 +223,9 @@ def run_cloud_ledger_desktop_parity(
             "data_source": "supabase",
         }
 
-    search = str(filters.get("search") or "").strip().lower()
-    if search:
-        rows = [row for row in rows if search in str(row.get("account_name", "")).lower()]
+    from bizora_core.mobile_supabase_ledger import filter_ledger_summary_rows
+
+    rows = filter_ledger_summary_rows(rows, filters.get("search"))
 
     result = _finish("ledger", rows, filters, "ledger")
     memory_db.force_disconnect()
