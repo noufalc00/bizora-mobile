@@ -1013,7 +1013,42 @@
         filters[key] = input.value;
       }
     });
+    const accountSelect = formRoot.querySelector('[data-key="search"]');
+    if (
+      accountSelect
+      && accountSelect.tagName === "SELECT"
+      && accountSelect.value
+      && accountSelect.selectedIndex >= 0
+    ) {
+      filters.account_name = accountSelect.options[accountSelect.selectedIndex].text;
+    }
     return filters;
+  }
+
+  function resolveLedgerReport(slug, filters) {
+    const accountId = String(filters.search || "").trim();
+    if (slug !== "ledger" || !accountId) {
+      return { slug, filters, renderSlug: slug };
+    }
+    return {
+      slug: "ledger-statement",
+      filters: {
+        from_date: filters.from_date,
+        to_date: filters.to_date,
+        account_id: accountId,
+        account_name: filters.account_name || "",
+      },
+      renderSlug: "ledger-statement",
+    };
+  }
+
+  function formatSignedLedgerMoney(value) {
+    const numeric = Number(value);
+    if (Number.isNaN(numeric)) {
+      return value;
+    }
+    const absolute = formatMoney(Math.abs(numeric));
+    return numeric >= 0 ? `${absolute} Dr` : `${absolute} Cr`;
   }
 
   const MONEY_COLUMN_KEYS = new Set([
@@ -1121,16 +1156,24 @@
     return "";
   }
 
-  function renderReportSummary(summary, labels) {
+  function renderReportSummary(summary, labels, slug) {
     if (!summary || !Object.keys(summary).length) {
       return "";
     }
+    const signedKeys = slug === "ledger-statement"
+      ? new Set(["opening_balance", "closing_balance"])
+      : null;
     const items = Object.keys(summary)
       .filter((key) => summary[key] != null && summary[key] !== "")
       .map((key) => {
         const label = (labels && labels[key]) || key.replace(/_/g, " ");
         const value = summary[key];
-        const display = Number.isNaN(Number(value)) ? value : formatMoney(value);
+        let display = value;
+        if (signedKeys && signedKeys.has(key)) {
+          display = formatSignedLedgerMoney(value);
+        } else if (!Number.isNaN(Number(value))) {
+          display = formatMoney(value);
+        }
         return `
           <div class="day-book-summary-item">
             <span>${label}</span>
@@ -1242,7 +1285,7 @@
 
     const summaryHtml = opts.slug === "day-book"
       ? renderDayBookSummary(opts.summary, opts.summaryLabels)
-      : renderReportSummary(opts.summary, opts.summaryLabels);
+      : renderReportSummary(opts.summary, opts.summaryLabels, opts.slug);
 
     return `
       ${summaryHtml}
@@ -1261,7 +1304,9 @@
     const resultRoot = document.getElementById("reportResult");
     resultRoot.innerHTML = '<div class="empty-state">Running report...</div>';
     try {
-      const payload = await runReportRequest(slug, collectFilters(formRoot));
+      const filters = collectFilters(formRoot);
+      const resolved = resolveLedgerReport(slug, filters);
+      const payload = await runReportRequest(resolved.slug, resolved.filters);
       if (!payload.success) {
         resultRoot.innerHTML = `<div class="error-state">${payload.message || "Report failed."}</div>`;
         return;
@@ -1271,7 +1316,7 @@
         payload.columns || [],
         payload.row_count,
         {
-          slug,
+          slug: resolved.renderSlug,
           summary: payload.summary || null,
           summaryLabels: payload.summary_labels || null,
         },

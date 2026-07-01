@@ -31,10 +31,12 @@ SLUG_REPORT_COLUMNS: dict[str, list[tuple[str, str]]] = {
     ],
     "ledger-statement": [
         ("Date", "voucher_date"),
+        ("Voucher Type", "voucher_type"),
+        ("Voucher No", "voucher_no"),
         ("Particulars", "particulars"),
         ("Debit (Dr)", "debit"),
         ("Credit (Cr)", "credit"),
-        ("Running Balance", "running_balance"),
+        ("Running Balance", "running_balance_display"),
     ],
     "bill-history": [
         ("Date", "voucher_date"),
@@ -280,6 +282,7 @@ ROW_KEY_ALIASES: dict[str, tuple[str, ...]] = {
     "debit": ("debit", "period_debit", "amount_received"),
     "credit": ("credit", "period_credit"),
     "running_balance": ("running_balance", "balance", "closing_balance"),
+    "running_balance_display": ("running_balance_display", "running_balance", "balance"),
     "status": ("status", "payment_status"),
     "movement_date": ("movement_date", "date", "created_at"),
     "product_name": ("product_name", "name"),

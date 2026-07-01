@@ -477,6 +477,23 @@ def _process_ledger_statement(raw: list[dict[str, Any]], params: dict[str, Any])
         except (TypeError, ValueError):
             return 0.0
 
+    def _format_signed_balance(value: float) -> str:
+        """Format signed net balance the same way as the desktop ledger grid."""
+        rounded = round(float(value or 0), 2)
+        if rounded >= 0:
+            return f"{abs(rounded):,.2f} Dr"
+        return f"{abs(rounded):,.2f} Cr"
+
+    def _decorate_entry(entry: dict[str, Any]) -> dict[str, Any]:
+        row = dict(entry)
+        row["running_balance_display"] = _format_signed_balance(_f(row.get("running_balance")))
+        return row
+
+    filters = params.get("filters") or {}
+    account_name = str(filters.get("account_name") or "Opening Balance")
+    from_date = str(params.get("from_date") or "")[:10]
+    to_date = str(params.get("to_date") or "")[:10]
+
     entries: list[dict[str, Any]] = []
     summary = {
         "opening_balance": 0.0,
@@ -493,7 +510,7 @@ def _process_ledger_statement(raw: list[dict[str, Any]], params: dict[str, Any])
             summary["period_credit"] = _f(row.get("out_period_credit"))
             summary["closing_balance"] = _f(row.get("out_closing_balance"))
             continue
-        entries.append(
+        entries.append(_decorate_entry(
             {
                 "voucher_date": row.get("out_voucher_date"),
                 "voucher_no": row.get("out_voucher_no") or "",
@@ -505,18 +522,44 @@ def _process_ledger_statement(raw: list[dict[str, Any]], params: dict[str, Any])
                 "running_balance": _f(row.get("out_running_balance")),
                 "account_id": account_id_int,
             }
-        )
+        ))
+
+    opening_row = {
+        "voucher_date": from_date,
+        "voucher_type": "Opening Balance",
+        "voucher_no": "",
+        "particulars": account_name,
+        "debit": "",
+        "credit": "",
+        "running_balance": summary["opening_balance"],
+        "running_balance_display": _format_signed_balance(summary["opening_balance"]),
+        "row_type": "opening",
+        "account_id": account_id_int,
+    }
+    closing_row = {
+        "voucher_date": to_date,
+        "voucher_type": "Closing Balance",
+        "voucher_no": "",
+        "particulars": account_name,
+        "debit": "",
+        "credit": "",
+        "running_balance": summary["closing_balance"],
+        "running_balance_display": _format_signed_balance(summary["closing_balance"]),
+        "row_type": "closing_balance",
+        "account_id": account_id_int,
+    }
+    statement_rows = [opening_row] + entries + [closing_row]
 
     return {
         "success": True,
         "message": "",
-        "rows": entries,
+        "rows": statement_rows,
         "summary": summary,
         "summary_labels": {
-            "opening_balance": "Opening Balance",
-            "period_debit": "Period Debit",
-            "period_credit": "Period Credit",
-            "closing_balance": "Closing Balance",
+            "opening_balance": "Opening",
+            "period_debit": "Debit",
+            "period_credit": "Credit",
+            "closing_balance": "Closing",
         },
         "data_source": "supabase_view",
     }
